@@ -224,7 +224,7 @@ public:
 
                 // Regularize if denominator is too small (numerical stability)
                 if (std::abs(denom) < 1e-60) {
-                    denom = (denom >= 0 ? 1e-60 : -1e-60);
+                    denom = (std::real(denom) >= 0 ? Scalar(1e-60) : Scalar(-1e-60));
                 }
 
                 Scalar inv_denom = Scalar(1) / denom;
