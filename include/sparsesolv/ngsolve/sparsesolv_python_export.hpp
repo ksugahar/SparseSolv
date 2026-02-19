@@ -196,6 +196,10 @@ void ExportSparseSolvTyped(py::module& m, const std::string& suffix) {
           &SparseSolvSolver<SCAL>::GetDivergenceCount,
           &SparseSolvSolver<SCAL>::SetDivergenceCount,
           "Number of consecutive bad iterations before declaring divergence")
+      .def_property("conjugate",
+          &SparseSolvSolver<SCAL>::GetConjugate,
+          &SparseSolvSolver<SCAL>::SetConjugate,
+          "Use conjugated inner product for Hermitian systems (default: False for complex-symmetric)")
       .def_property_readonly("last_result",
           &SparseSolvSolver<SCAL>::GetLastResult,
           "Result from the last Solve() or Mult() call");
@@ -335,21 +339,24 @@ freedofs : ngsolve.BitArray, optional
                                  const string& method, py::object freedofs,
                                  double tol, int maxiter, double shift,
                                  bool save_best_result, bool save_residual_history,
-                                 bool printrates) {
+                                 bool printrates, bool conjugate) {
     auto sp_freedofs = ExtractFreeDofs(freedofs);
     shared_ptr<BaseMatrix> result;
     if (mat->IsComplex()) {
       auto sp = dynamic_pointer_cast<SparseMatrix<Complex>>(mat);
       if (!sp) throw py::type_error("SparseSolvSolver: expected SparseMatrix");
-      result = make_shared<SparseSolvSolver<Complex>>(
+      auto solver = make_shared<SparseSolvSolver<Complex>>(
           sp, method, sp_freedofs, tol, maxiter, shift,
           save_best_result, save_residual_history, printrates);
+      solver->SetConjugate(conjugate);
+      result = solver;
     } else {
       auto sp = dynamic_pointer_cast<SparseMatrix<double>>(mat);
       if (!sp) throw py::type_error("SparseSolvSolver: expected SparseMatrix");
-      result = make_shared<SparseSolvSolver<double>>(
+      auto solver = make_shared<SparseSolvSolver<double>>(
           sp, method, sp_freedofs, tol, maxiter, shift,
           save_best_result, save_residual_history, printrates);
+      result = solver;
     }
     return result;
   },
@@ -362,6 +369,7 @@ freedofs : ngsolve.BitArray, optional
   py::arg("save_best_result") = true,
   py::arg("save_residual_history") = false,
   py::arg("printrates") = false,
+  py::arg("conjugate") = false,
   R"raw_string(
 Iterative solver using the SparseSolv library by JP-MARs.
 
@@ -441,6 +449,12 @@ save_residual_history : bool
 
 printrates : bool
   Print convergence information after solve (default: False).
+
+conjugate : bool
+  Use conjugated inner product for Hermitian systems (default: False).
+  False: unconjugated (a^T * b) for complex-symmetric systems (A^T = A).
+  True: conjugated (a^H * b) for Hermitian systems (A^H = A).
+  Has no effect for real-valued problems.
 
 Properties (set after construction):
 

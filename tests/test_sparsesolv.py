@@ -12,8 +12,8 @@ import pytest
 from netgen.geom2d import unit_square
 from netgen.csg import unit_cube
 from ngsolve import *
-from ngsolve.la import ICPreconditioner, SGSPreconditioner
-from ngsolve.la import SparseSolvSolver
+from sparsesolv_ngsolve import ICPreconditioner, SGSPreconditioner
+from sparsesolv_ngsolve import SparseSolvSolver
 from ngsolve.krylovspace import CGSolver
 
 
@@ -634,6 +634,77 @@ def test_sparsesolv_vs_bddc_eddy_current(eddy_current_3d):
     assert iccg_result.converged
     assert err_iccg < 1e-4
     assert err_bddc < 1e-4
+
+
+# ============================================================================
+# Conjugate inner product tests (Hermitian vs complex-symmetric)
+# ============================================================================
+
+def test_conjugate_property(poisson_2d):
+    """conjugate property getter and setter work correctly."""
+    _, fes, a, _, _, _ = poisson_2d
+
+    solver = SparseSolvSolver(a.mat, freedofs=fes.FreeDofs())
+    assert solver.conjugate is False  # default
+
+    solver.conjugate = True
+    assert solver.conjugate is True
+
+    solver.conjugate = False
+    assert solver.conjugate is False
+
+
+def test_conjugate_factory_parameter(poisson_2d_complex):
+    """conjugate parameter in factory function is passed through."""
+    _, fes, a, _ = poisson_2d_complex
+
+    solver = SparseSolvSolver(a.mat, method="ICCG",
+                               freedofs=fes.FreeDofs(),
+                               conjugate=True)
+    assert solver.conjugate is True
+
+
+@pytest.mark.parametrize("method", ["ICCG", "SGSMRTR"])
+def test_hermitian_system_with_conjugate(poisson_2d_complex, method):
+    """Hermitian system (real coefficients, complex space) solves with conjugate=True."""
+    mesh, fes, a, f = poisson_2d_complex
+
+    # This is a Hermitian system (A^H = A) because coefficients are real.
+    # Both conjugate=True (Hermitian) and conjugate=False (complex-symmetric)
+    # should converge, but conjugate=True is mathematically correct here.
+    solver = SparseSolvSolver(a.mat, method=method,
+                               freedofs=fes.FreeDofs(),
+                               tol=1e-10, maxiter=2000,
+                               conjugate=True)
+
+    gfu = GridFunction(fes)
+    gfu.vec.data = solver * f.vec
+
+    result = solver.last_result
+    print(f"{method} Hermitian (conjugate=True): iterations={result.iterations}")
+    assert result.converged
+    assert Norm(gfu.vec) > 0
+
+
+def test_hermitian_vs_direct(poisson_2d_complex):
+    """Hermitian ICCG with conjugate=True matches direct solver."""
+    mesh, fes, a, f = poisson_2d_complex
+
+    gfu_direct = GridFunction(fes)
+    gfu_direct.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
+
+    solver = SparseSolvSolver(a.mat, method="ICCG",
+                               freedofs=fes.FreeDofs(),
+                               tol=1e-12, maxiter=2000,
+                               conjugate=True)
+    gfu_iccg = GridFunction(fes)
+    gfu_iccg.vec.data = solver * f.vec
+
+    diff = gfu_iccg.vec.CreateVector()
+    diff.data = gfu_iccg.vec - gfu_direct.vec
+    rel_err = Norm(diff) / Norm(gfu_direct.vec)
+    print(f"Hermitian ICCG vs direct: relative error={rel_err:.2e}")
+    assert rel_err < 1e-6
 
 
 if __name__ == "__main__":

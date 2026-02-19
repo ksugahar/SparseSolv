@@ -109,6 +109,15 @@ struct SolverConfig {
     bool save_residual_history = false;
 
     //--------------------------------------------------
+    // Complex inner product
+    //--------------------------------------------------
+
+    /// Use conjugated inner product (a^H * b) for Hermitian systems.
+    /// Default false uses unconjugated (a^T * b) for complex-symmetric systems.
+    /// Has no effect for real-valued problems.
+    bool conjugate = false;
+
+    //--------------------------------------------------
     // Parallel options
     //--------------------------------------------------
 
@@ -163,6 +172,11 @@ struct SolverConfig {
 
     SolverConfig& with_auto_shift(bool enable = true) {
         auto_shift = enable;
+        return *this;
+    }
+
+    SolverConfig& with_conjugate(bool enable = true) {
+        conjugate = enable;
         return *this;
     }
 };

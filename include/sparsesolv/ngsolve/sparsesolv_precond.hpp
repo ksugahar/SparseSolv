@@ -519,6 +519,10 @@ public:
     bool GetDiagonalScaling() const { return config_.diagonal_scaling; }
     void SetDiagonalScaling(bool enable) { config_.diagonal_scaling = enable; }
 
+    // Complex inner product
+    bool GetConjugate() const { return config_.conjugate; }
+    void SetConjugate(bool enable) { config_.conjugate = enable; }
+
     // Divergence detection
     bool GetDivergenceCheck() const {
         return config_.divergence_check == sparsesolv::DivergenceCheck::StagnationCount;

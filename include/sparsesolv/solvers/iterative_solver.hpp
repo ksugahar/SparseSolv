@@ -12,8 +12,10 @@
 #include "../core/preconditioner.hpp"
 #include "../core/parallel.hpp"
 #include <cmath>
+#include <complex>
 #include <algorithm>
 #include <stdexcept>
+#include <type_traits>
 
 namespace sparsesolv {
 
@@ -270,17 +272,34 @@ protected:
     /**
      * @brief Compute dot product of two vectors
      *
-     * Uses unconjugated dot product (a^T * b) for both real and complex types.
-     * This is correct for complex-symmetric systems (A^T = A) arising from
-     * FEM discretizations (e.g., eddy current problems).
+     * When config_.conjugate is false (default):
+     *   Unconjugated dot product (a^T * b) for complex-symmetric systems (A^T = A).
      *
-     * Note: For Hermitian systems (A^H = A), the conjugated inner product
-     * (a^H * b) would be needed, but FEM matrices are typically complex-symmetric.
+     * When config_.conjugate is true:
+     *   Conjugated dot product (a^H * b) for Hermitian systems (A^H = A).
+     *   Uses std::conj(a[i]) * b[i].
+     *
+     * For real types, conjugation has no effect.
      */
-    static Scalar dot_product(const Scalar* a, const Scalar* b, index_t size) {
-        return parallel_reduce_sum<Scalar>(size, [a, b](index_t i) {
-            return a[i] * b[i];
-        });
+    Scalar dot_product(const Scalar* a, const Scalar* b, index_t size) const {
+        if constexpr (std::is_same_v<Scalar, double>) {
+            // Real: conjugation has no effect
+            return parallel_reduce_sum<Scalar>(size, [a, b](index_t i) {
+                return a[i] * b[i];
+            });
+        } else {
+            if (config_.conjugate) {
+                // Hermitian: a^H * b = sum( conj(a[i]) * b[i] )
+                return parallel_reduce_sum<Scalar>(size, [a, b](index_t i) {
+                    return std::conj(a[i]) * b[i];
+                });
+            } else {
+                // Complex-symmetric: a^T * b = sum( a[i] * b[i] )
+                return parallel_reduce_sum<Scalar>(size, [a, b](index_t i) {
+                    return a[i] * b[i];
+                });
+            }
+        }
     }
 
     // Configuration
