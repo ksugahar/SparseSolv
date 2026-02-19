@@ -51,6 +51,7 @@
 #include "core/solver_config.hpp"
 #include "core/sparse_matrix_view.hpp"
 #include "core/preconditioner.hpp"
+#include "core/abmc_ordering.hpp"
 
 // Preconditioners
 #include "preconditioners/ic_preconditioner.hpp"
@@ -105,7 +106,38 @@ inline SolverResult solve_iccg(
     CGSolver<Scalar> solver;
     solver.set_config(config);
 
-    // Solve
+    if (precond.has_reordered_matrix()) {
+        // ABMC path: run CG entirely in reordered space
+        // Permutation is done once before and after CG (not per iteration)
+        const auto& ord = precond.abmc_ordering();
+
+        // Permute b: b_reord[ord[i]] = b[i]
+        std::vector<Scalar> b_reord(size);
+        for (index_t i = 0; i < size; ++i) {
+            b_reord[ord[i]] = b[i];
+        }
+
+        // Permute x (initial guess): x_reord[ord[i]] = x[i]
+        std::vector<Scalar> x_reord(size);
+        for (index_t i = 0; i < size; ++i) {
+            x_reord[ord[i]] = x[i];
+        }
+
+        // CG with reordered matrix and no-permutation preconditioner adapter
+        auto A_reord = precond.reordered_matrix_view();
+        ICPrecondReorderedAdapter<Scalar> adapter(precond);
+        auto result = solver.solve(A_reord, b_reord.data(), x_reord.data(),
+                                   size, &adapter);
+
+        // Reverse permute solution: x[i] = x_reord[ord[i]]
+        for (index_t i = 0; i < size; ++i) {
+            x[i] = x_reord[ord[i]];
+        }
+
+        return result;
+    }
+
+    // Standard path (level scheduling or no preconditioning)
     return solver.solve(A, b, x, size, &precond);
 }
 

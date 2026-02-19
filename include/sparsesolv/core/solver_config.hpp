@@ -125,13 +125,24 @@ struct SolverConfig {
     int num_threads = 0;
 
     //--------------------------------------------------
-    // ABMC ordering parameters (for parallel IC)
+    // ABMC ordering parameters (for parallel triangular solves)
     //--------------------------------------------------
 
-    /// Number of blocks for ABMC ordering
-    int abmc_num_blocks = 4;
+    /// Enable ABMC (Algebraic Block Multi-Color) ordering.
+    /// When enabled, the preconditioner reorders the matrix to enable
+    /// parallel triangular solves using a two-level hierarchy:
+    /// colors (sequential) -> blocks (parallel) -> rows (sequential).
+    bool use_abmc = false;
 
-    /// Number of colors for ABMC ordering
+    /// Number of rows per block for ABMC ordering (block size).
+    /// Larger blocks reduce parallelism overhead but may decrease
+    /// the degree of parallelism. Typical values: 2-16.
+    int abmc_block_size = 4;
+
+    /// Number of colors for ABMC graph coloring.
+    /// More colors allow finer-grained parallelism but increase
+    /// the number of sequential synchronization points.
+    /// The actual number may be increased if the graph requires it.
     int abmc_num_colors = 4;
 
     //--------------------------------------------------
@@ -177,6 +188,13 @@ struct SolverConfig {
 
     SolverConfig& with_conjugate(bool enable = true) {
         conjugate = enable;
+        return *this;
+    }
+
+    SolverConfig& with_abmc(bool enable = true, int block_size = 4, int num_colors = 4) {
+        use_abmc = enable;
+        abmc_block_size = block_size;
+        abmc_num_colors = num_colors;
         return *this;
     }
 };

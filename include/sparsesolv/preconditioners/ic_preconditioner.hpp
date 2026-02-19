@@ -9,6 +9,7 @@
 #include "../core/preconditioner.hpp"
 #include "../core/solver_config.hpp"
 #include "../core/level_schedule.hpp"
+#include "../core/abmc_ordering.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -86,8 +87,30 @@ public:
         const index_t n = A.rows();
         size_ = n;
 
-        // Extract lower triangular part
-        extract_lower_triangular(A);
+        if (config_.use_abmc) {
+            // ABMC path: reorder matrix, then extract and factorize
+
+            // 1. Build ABMC schedule from full matrix pattern
+            abmc_schedule_.build(A.row_ptr(), A.col_idx(), n,
+                                 config_.abmc_block_size, config_.abmc_num_colors);
+
+            // 2. Reorder the full matrix according to ABMC permutation
+            reorder_matrix(A);
+
+            // 3. Extract lower triangular from the reordered matrix
+            SparseMatrixView<Scalar> A_reordered(
+                reordered_csr_.rows, reordered_csr_.cols,
+                reordered_csr_.row_ptr.data(),
+                reordered_csr_.col_idx.data(),
+                reordered_csr_.values.data());
+            extract_lower_triangular(A_reordered);
+
+            // Keep reordered full matrix for CG in reordered space
+            // (used by solve_iccg() to run CG entirely in reordered space)
+        } else {
+            // Standard path: extract lower triangular directly
+            extract_lower_triangular(A);
+        }
 
         // Save original values for auto-shift restart or diagonal scaling
         if (config_.auto_shift || config_.diagonal_scaling) {
@@ -105,9 +128,16 @@ public:
         // Compute transpose L^T
         compute_transpose();
 
-        // Build level schedules for parallel triangular solves
-        fwd_schedule_.build_from_lower(L_.row_ptr.data(), L_.col_idx.data(), n);
-        bwd_schedule_.build_from_upper(Lt_.row_ptr.data(), Lt_.col_idx.data(), n);
+        if (config_.use_abmc) {
+            // Pre-allocate work vectors for ABMC apply
+            abmc_x_perm_.resize(n);
+            abmc_y_perm_.resize(n);
+            abmc_temp_.resize(n);
+        } else {
+            // Build level schedules for parallel triangular solves
+            fwd_schedule_.build_from_lower(L_.row_ptr.data(), L_.col_idx.data(), n);
+            bwd_schedule_.build_from_upper(Lt_.row_ptr.data(), Lt_.col_idx.data(), n);
+        }
 
         this->is_setup_ = true;
     }
@@ -129,33 +159,10 @@ public:
             throw std::runtime_error("ICPreconditioner::apply called before setup");
         }
 
-        // Temporary vector for intermediate results
-        std::vector<Scalar> temp(size);
-
-        if (config_.diagonal_scaling && !scaling_.empty()) {
-            // Step 0: Scale input: temp = scaling * x
-            for (index_t i = 0; i < size; ++i) {
-                temp[i] = x[i] * static_cast<Scalar>(scaling_[i]);
-            }
-
-            // Step 1: Forward substitution - solve L * temp2 = temp
-            std::vector<Scalar> temp2(size);
-            forward_substitution(temp.data(), temp2.data());
-
-            // Step 2+3: Backward substitution - solve L^T * temp = D^{-1} * temp2
-            backward_substitution(temp2.data(), temp.data());
-
-            // Step 4: Scale output: y = scaling * temp
-            for (index_t i = 0; i < size; ++i) {
-                y[i] = temp[i] * static_cast<Scalar>(scaling_[i]);
-            }
+        if (config_.use_abmc && abmc_schedule_.is_built()) {
+            apply_abmc(x, y, size);
         } else {
-            // No scaling: standard path
-            // Step 1: Forward substitution - solve L * temp = x
-            forward_substitution(x, temp.data());
-
-            // Step 2+3: Backward substitution - solve L^T * y = D^{-1} * temp
-            backward_substitution(temp.data(), y);
+            apply_level_schedule(x, y, size);
         }
     }
 
@@ -176,6 +183,58 @@ public:
         shift_parameter_ = config.shift_parameter;
     }
 
+    /// Check if ABMC reordered matrix is available for CG in reordered space
+    bool has_reordered_matrix() const {
+        return config_.use_abmc && reordered_csr_.rows > 0;
+    }
+
+    /// Get a view of the reordered full matrix (valid only if has_reordered_matrix())
+    SparseMatrixView<Scalar> reordered_matrix_view() const {
+        return SparseMatrixView<Scalar>(
+            reordered_csr_.rows, reordered_csr_.cols,
+            reordered_csr_.row_ptr.data(),
+            reordered_csr_.col_idx.data(),
+            reordered_csr_.values.data());
+    }
+
+    /// Get the ABMC ordering (ordering[old_row] = new_row)
+    const std::vector<index_t>& abmc_ordering() const {
+        return abmc_schedule_.ordering;
+    }
+
+    /// Get the ABMC reverse ordering (reverse_ordering[new_row] = old_row)
+    const std::vector<index_t>& abmc_reverse_ordering() const {
+        return abmc_schedule_.reverse_ordering;
+    }
+
+    /**
+     * @brief Apply preconditioner in reordered space (no permutation)
+     *
+     * For use when CG operates entirely in ABMC-reordered space.
+     * Input x and output y are already in reordered space.
+     */
+    void apply_in_reordered_space(const Scalar* x, Scalar* y, index_t size) const {
+        if (!this->is_setup_) {
+            throw std::runtime_error(
+                "ICPreconditioner::apply_in_reordered_space called before setup");
+        }
+
+        if (config_.diagonal_scaling && !scaling_.empty()) {
+            // scaling_ was computed from L_ which is in reordered space
+            for (index_t i = 0; i < size; ++i) {
+                abmc_x_perm_[i] = x[i] * static_cast<Scalar>(scaling_[i]);
+            }
+            forward_substitution_abmc(abmc_x_perm_.data(), abmc_temp_.data());
+            backward_substitution_abmc(abmc_temp_.data(), abmc_x_perm_.data());
+            for (index_t i = 0; i < size; ++i) {
+                y[i] = abmc_x_perm_[i] * static_cast<Scalar>(scaling_[i]);
+            }
+        } else {
+            forward_substitution_abmc(x, abmc_temp_.data());
+            backward_substitution_abmc(abmc_temp_.data(), y);
+        }
+    }
+
 private:
     double shift_parameter_;
     double actual_shift_ = 0.0;      // Actual shift used (after auto-adjustment)
@@ -193,9 +252,235 @@ private:
     // Diagonal scaling
     std::vector<double> scaling_;    // scaling[i] = 1/sqrt(A[i,i])
 
-    // Level schedules for parallel triangular solves
+    // Level schedules for parallel triangular solves (non-ABMC path)
     LevelSchedule fwd_schedule_;     // For forward substitution (L)
     LevelSchedule bwd_schedule_;     // For backward substitution (L^T)
+
+    // ABMC ordering support
+    ABMCSchedule abmc_schedule_;             // Block-color schedule
+    SparseMatrixCSR<Scalar> reordered_csr_;  // Temporary: reordered full matrix
+    mutable std::vector<Scalar> abmc_x_perm_;   // Work vector: permuted input
+    mutable std::vector<Scalar> abmc_y_perm_;   // Work vector: permuted output
+    mutable std::vector<Scalar> abmc_temp_;     // Work vector: intermediate
+
+    // ================================================================
+    // Apply implementations
+    // ================================================================
+
+    /**
+     * @brief Apply with level scheduling (original path)
+     */
+    void apply_level_schedule(const Scalar* x, Scalar* y, index_t size) const {
+        std::vector<Scalar> temp(size);
+
+        if (config_.diagonal_scaling && !scaling_.empty()) {
+            for (index_t i = 0; i < size; ++i) {
+                temp[i] = x[i] * static_cast<Scalar>(scaling_[i]);
+            }
+            std::vector<Scalar> temp2(size);
+            forward_substitution(temp.data(), temp2.data());
+            backward_substitution(temp2.data(), temp.data());
+            for (index_t i = 0; i < size; ++i) {
+                y[i] = temp[i] * static_cast<Scalar>(scaling_[i]);
+            }
+        } else {
+            forward_substitution(x, temp.data());
+            backward_substitution(temp.data(), y);
+        }
+    }
+
+    /**
+     * @brief Apply with ABMC ordering
+     *
+     * Permutes input to reordered space, performs ABMC-parallel
+     * forward/backward substitution, then permutes output back.
+     */
+    void apply_abmc(const Scalar* x, Scalar* y, index_t size) const {
+        const auto& ord = abmc_schedule_.ordering;
+        const auto& rev = abmc_schedule_.reverse_ordering;
+
+        if (config_.diagonal_scaling && !scaling_.empty()) {
+            // Scale and permute input: x_perm[ordering[i]] = scaling[i] * x[i]
+            for (index_t i = 0; i < size; ++i) {
+                abmc_x_perm_[ord[i]] = x[i] * static_cast<Scalar>(scaling_[rev[ord[i]]]);
+            }
+
+            // Forward substitution in reordered space
+            forward_substitution_abmc(abmc_x_perm_.data(), abmc_temp_.data());
+
+            // Backward substitution in reordered space
+            backward_substitution_abmc(abmc_temp_.data(), abmc_y_perm_.data());
+
+            // Reverse permute and scale output: y[i] = scaling[i] * y_perm[ordering[i]]
+            for (index_t i = 0; i < size; ++i) {
+                y[i] = abmc_y_perm_[ord[i]] * static_cast<Scalar>(scaling_[rev[ord[i]]]);
+            }
+        } else {
+            // Permute input: x_perm[ordering[i]] = x[i]
+            for (index_t i = 0; i < size; ++i) {
+                abmc_x_perm_[ord[i]] = x[i];
+            }
+
+            // Forward substitution in reordered space
+            forward_substitution_abmc(abmc_x_perm_.data(), abmc_temp_.data());
+
+            // Backward substitution in reordered space
+            backward_substitution_abmc(abmc_temp_.data(), abmc_y_perm_.data());
+
+            // Reverse permute output: y[i] = y_perm[ordering[i]]
+            for (index_t i = 0; i < size; ++i) {
+                y[i] = abmc_y_perm_[ord[i]];
+            }
+        }
+    }
+
+    // ================================================================
+    // Matrix reordering
+    // ================================================================
+
+    /**
+     * @brief Reorder full matrix A according to ABMC permutation
+     *
+     * Creates reordered_csr_ where entry A[i][j] maps to
+     * A_reordered[ordering[i]][ordering[j]].
+     */
+    void reorder_matrix(const SparseMatrixView<Scalar>& A) {
+        const index_t n = A.rows();
+        const auto& ord = abmc_schedule_.ordering;
+
+        reordered_csr_.rows = reordered_csr_.cols = n;
+
+        // First pass: count nnz per reordered row
+        std::vector<index_t> counts(n, 0);
+        for (index_t i = 0; i < n; ++i) {
+            auto [start, end] = A.row_range(i);
+            counts[ord[i]] += (end - start);
+        }
+
+        // Build row pointers
+        reordered_csr_.row_ptr.resize(n + 1);
+        reordered_csr_.row_ptr[0] = 0;
+        for (index_t i = 0; i < n; ++i) {
+            reordered_csr_.row_ptr[i + 1] = reordered_csr_.row_ptr[i] + counts[i];
+        }
+
+        // Second pass: fill column indices and values (unsorted within each row)
+        const index_t total_nnz = reordered_csr_.row_ptr[n];
+        reordered_csr_.col_idx.resize(total_nnz);
+        reordered_csr_.values.resize(total_nnz);
+
+        std::vector<index_t> pos(n);
+        for (index_t i = 0; i < n; ++i) pos[i] = reordered_csr_.row_ptr[i];
+
+        for (index_t i = 0; i < n; ++i) {
+            index_t new_i = ord[i];
+            auto [start, end] = A.row_range(i);
+            for (index_t k = start; k < end; ++k) {
+                index_t p = pos[new_i]++;
+                reordered_csr_.col_idx[p] = ord[A.col_idx()[k]];
+                reordered_csr_.values[p] = A.values()[k];
+            }
+        }
+
+        // Sort each row by column index (required for CSR invariant)
+        for (index_t i = 0; i < n; ++i) {
+            index_t row_start = reordered_csr_.row_ptr[i];
+            index_t row_end = reordered_csr_.row_ptr[i + 1];
+            index_t row_nnz = row_end - row_start;
+
+            if (row_nnz <= 1) continue;
+
+            // Build index array and sort
+            std::vector<index_t> indices(row_nnz);
+            for (index_t k = 0; k < row_nnz; ++k) indices[k] = k;
+            std::sort(indices.begin(), indices.end(), [&](index_t a, index_t b) {
+                return reordered_csr_.col_idx[row_start + a] <
+                       reordered_csr_.col_idx[row_start + b];
+            });
+
+            // Apply permutation
+            std::vector<index_t> sorted_cols(row_nnz);
+            std::vector<Scalar> sorted_vals(row_nnz);
+            for (index_t k = 0; k < row_nnz; ++k) {
+                sorted_cols[k] = reordered_csr_.col_idx[row_start + indices[k]];
+                sorted_vals[k] = reordered_csr_.values[row_start + indices[k]];
+            }
+            for (index_t k = 0; k < row_nnz; ++k) {
+                reordered_csr_.col_idx[row_start + k] = sorted_cols[k];
+                reordered_csr_.values[row_start + k] = sorted_vals[k];
+            }
+        }
+    }
+
+    // ================================================================
+    // ABMC triangular solves
+    // ================================================================
+
+    /**
+     * @brief Forward substitution with ABMC ordering: solve L * y = x
+     *
+     * Colors processed sequentially, blocks within each color in parallel,
+     * rows within each block sequentially.
+     */
+    void forward_substitution_abmc(const Scalar* x, Scalar* y) const {
+        for (const auto& blocks_in_color : abmc_schedule_.color_list) {
+            const index_t num_blocks = static_cast<index_t>(blocks_in_color.size());
+            parallel_for(num_blocks, [&](index_t bidx) {
+                const index_t blk = blocks_in_color[bidx];
+                const auto& rows = abmc_schedule_.block_list[blk];
+
+                for (index_t ridx = 0; ridx < static_cast<index_t>(rows.size()); ++ridx) {
+                    const index_t i = rows[ridx];
+                    Scalar s = x[i];
+                    const index_t row_start = L_.row_ptr[i];
+                    const index_t row_end = L_.row_ptr[i + 1] - 1; // Exclude diagonal
+
+                    for (index_t k = row_start; k < row_end; ++k) {
+                        s -= L_.values[k] * y[L_.col_idx[k]];
+                    }
+
+                    // Divide by diagonal element (last entry in row)
+                    y[i] = s / L_.values[row_end];
+                }
+            });
+        }
+    }
+
+    /**
+     * @brief Backward substitution with ABMC ordering: solve L^T * y = D^{-1} * x
+     *
+     * Colors processed in reverse order, blocks within each color in parallel,
+     * rows within each block in reverse order.
+     */
+    void backward_substitution_abmc(const Scalar* x, Scalar* y) const {
+        const index_t num_colors = static_cast<index_t>(abmc_schedule_.color_list.size());
+        for (index_t c = num_colors; c-- > 0;) {
+            const auto& blocks_in_color = abmc_schedule_.color_list[c];
+            const index_t num_blocks = static_cast<index_t>(blocks_in_color.size());
+            parallel_for(num_blocks, [&](index_t bidx) {
+                const index_t blk = blocks_in_color[bidx];
+                const auto& rows = abmc_schedule_.block_list[blk];
+
+                for (index_t ridx = static_cast<index_t>(rows.size()); ridx-- > 0;) {
+                    const index_t i = rows[ridx];
+                    Scalar s = Scalar(0);
+                    const index_t row_start = Lt_.row_ptr[i] + 1; // Skip diagonal
+                    const index_t row_end = Lt_.row_ptr[i + 1];
+
+                    for (index_t k = row_start; k < row_end; ++k) {
+                        s -= Lt_.values[k] * y[Lt_.col_idx[k]];
+                    }
+
+                    // Apply D^{-1} and add contribution from x
+                    y[i] = s * inv_diag_[i] + x[i];
+                }
+            });
+        }
+    }
+
+    // ================================================================
+    // Standard methods
+    // ================================================================
 
     /**
      * @brief Extract lower triangular part from matrix A
@@ -485,6 +770,36 @@ private:
 // Type aliases
 using ICPreconditionerD = ICPreconditioner<double>;
 using ICPreconditionerC = ICPreconditioner<complex_t>;
+
+/**
+ * @brief Adapter that wraps ICPreconditioner for use in reordered space
+ *
+ * When CG operates in ABMC-reordered space, this adapter is passed as
+ * the preconditioner. Its apply() delegates to
+ * ICPreconditioner::apply_in_reordered_space() which skips permutations.
+ */
+template<typename Scalar>
+class ICPrecondReorderedAdapter : public Preconditioner<Scalar> {
+public:
+    explicit ICPrecondReorderedAdapter(const ICPreconditioner<Scalar>& precond)
+        : precond_(precond)
+    {
+        this->is_setup_ = true;
+    }
+
+    void setup(const SparseMatrixView<Scalar>& /*A*/) override {
+        this->is_setup_ = true;
+    }
+
+    void apply(const Scalar* x, Scalar* y, index_t size) const override {
+        precond_.apply_in_reordered_space(x, y, size);
+    }
+
+    std::string name() const override { return "IC-Reordered"; }
+
+private:
+    const ICPreconditioner<Scalar>& precond_;
+};
 
 } // namespace sparsesolv
 

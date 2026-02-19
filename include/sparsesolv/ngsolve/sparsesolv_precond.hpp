@@ -523,6 +523,14 @@ public:
     bool GetConjugate() const { return config_.conjugate; }
     void SetConjugate(bool enable) { config_.conjugate = enable; }
 
+    // ABMC ordering
+    bool GetUseABMC() const { return config_.use_abmc; }
+    void SetUseABMC(bool enable) { config_.use_abmc = enable; }
+    int GetABMCBlockSize() const { return config_.abmc_block_size; }
+    void SetABMCBlockSize(int bs) { config_.abmc_block_size = bs; }
+    int GetABMCNumColors() const { return config_.abmc_num_colors; }
+    void SetABMCNumColors(int nc) { config_.abmc_num_colors = nc; }
+
     // Divergence detection
     bool GetDivergenceCheck() const {
         return config_.divergence_check == sparsesolv::DivergenceCheck::StagnationCount;

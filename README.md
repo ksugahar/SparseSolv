@@ -30,6 +30,7 @@ pybind11 extension module (`sparsesolv_ngsolve.pyd`) that links against an insta
 - Numerical breakdown detection with convergence-aware recovery
 - Best-result tracking (returns best iterate if solver doesn't converge)
 - Residual history recording
+- ABMC (Algebraic Block Multi-Color) ordering for parallel triangular solves
 - Template support for `double` and `std::complex<double>`
 
 ### Parallelism
@@ -181,6 +182,31 @@ solver = SparseSolvSolver(a.mat, method="ICCG",
 
 This corresponds to NGSolve's `CGSolver(conjugate=True/False)`.
 
+### ABMC Ordering (Parallel Triangular Solves)
+
+ABMC (Algebraic Block Multi-Color) ordering enables parallel execution of
+triangular solves in the IC preconditioner. Without ABMC, triangular solves use
+level scheduling, which can have limited parallelism for FEM matrices with deep
+dependency chains.
+
+```python
+solver = SparseSolvSolver(a.mat, method="ICCG",
+                          freedofs=fes.FreeDofs(), tol=1e-10,
+                          use_abmc=True,
+                          abmc_block_size=4,
+                          abmc_num_colors=4)
+```
+
+The algorithm groups nearby rows into blocks (BFS aggregation), then colors the
+block adjacency graph so that blocks with the same color have no lower-triangular
+dependencies. During the triangular solve:
+- Colors are processed sequentially (inter-color dependencies)
+- Blocks within the same color are processed in parallel
+- Rows within a block are processed sequentially
+
+The reordering is applied internally within the preconditioner; the CG solver and
+SpMV operate on the original matrix ordering.
+
 ### SparseSolvSolver Parameters
 
 | Parameter | Type | Default | Description |
@@ -196,6 +222,9 @@ This corresponds to NGSolve's `CGSolver(conjugate=True/False)`.
 | `conjugate` | bool | `False` | Conjugated inner product for Hermitian systems |
 | `divergence_check` | bool | `False` | Early termination on stagnation |
 | `printrates` | bool | `False` | Print convergence info to stdout |
+| `use_abmc` | bool | `False` | Enable ABMC ordering for parallel triangular solves |
+| `abmc_block_size` | int | `4` | Rows per block in ABMC aggregation |
+| `abmc_num_colors` | int | `4` | Target number of colors for ABMC coloring |
 
 ### Available Python Classes
 
@@ -240,7 +269,8 @@ SparseSolv/
 │   ├── sparsesolv.hpp          # Main header (convenience includes)
 │   ├── core/                   # Types, config, matrix view, preconditioner base
 │   │   ├── parallel.hpp        # Parallelism abstraction (TaskManager/OpenMP/serial)
-│   │   └── level_schedule.hpp  # Level scheduling for triangular solves
+│   │   ├── level_schedule.hpp  # Level scheduling for triangular solves
+│   │   └── abmc_ordering.hpp   # ABMC ordering for parallel triangular solves
 │   ├── preconditioners/        # IC, SGS implementations
 │   ├── solvers/                # CG, SGS-MRTR implementations
 │   └── ngsolve/                # NGSolve BaseMatrix wrappers + pybind11 export
@@ -252,6 +282,29 @@ SparseSolv/
 ├── CMakeLists.txt              # Header-only library + NGSolve module build
 └── LICENSE
 ```
+
+## References
+
+1. T. Iwashita, H. Nakashima, Y. Takahashi,
+   "Algebraic Block Multi-Color Ordering Method for Parallel Multi-Threaded
+   Sparse Triangular Solver in ICCG Method",
+   *Proc. IEEE 26th International Parallel and Distributed Processing Symposium (IPDPS)*, 2012.
+   — ABMC ordering algorithm.
+
+2. Y. Tsuburaya, T. Mifune, T. Iwashita, E. Takahashi,
+   "Minimum Residual-Like Methods for Solving Ax = b with Shift-and-Invert Enhanced
+   Multi-Step MRTR",
+   *IEEE Transactions on Magnetics*, Vol. 49, No. 5, pp. 1569–1572, 2013.
+   — SGS-MRTR solver.
+
+3. Y. Tsuburaya,
+   "大規模電磁界問題の有限要素解析のための反復法の開発",
+   *博士論文*, 京都大学, 2016.
+   — Comprehensive reference on iterative solvers for large-scale electromagnetic FEM.
+
+4. S. Hiruma, JP-MARs/SparseSolv,
+   https://github.com/JP-MARs/SparseSolv
+   — Original implementation (MPL 2.0 license).
 
 ## License
 

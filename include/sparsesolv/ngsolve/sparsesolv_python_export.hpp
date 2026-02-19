@@ -200,6 +200,18 @@ void ExportSparseSolvTyped(py::module& m, const std::string& suffix) {
           &SparseSolvSolver<SCAL>::GetConjugate,
           &SparseSolvSolver<SCAL>::SetConjugate,
           "Use conjugated inner product for Hermitian systems (default: False for complex-symmetric)")
+      .def_property("use_abmc",
+          &SparseSolvSolver<SCAL>::GetUseABMC,
+          &SparseSolvSolver<SCAL>::SetUseABMC,
+          "Enable ABMC (Algebraic Block Multi-Color) ordering for parallel triangular solves")
+      .def_property("abmc_block_size",
+          &SparseSolvSolver<SCAL>::GetABMCBlockSize,
+          &SparseSolvSolver<SCAL>::SetABMCBlockSize,
+          "Number of rows per block for ABMC ordering (default: 4)")
+      .def_property("abmc_num_colors",
+          &SparseSolvSolver<SCAL>::GetABMCNumColors,
+          &SparseSolvSolver<SCAL>::SetABMCNumColors,
+          "Number of colors for ABMC graph coloring (default: 4)")
       .def_property_readonly("last_result",
           &SparseSolvSolver<SCAL>::GetLastResult,
           "Result from the last Solve() or Mult() call");
@@ -339,7 +351,8 @@ freedofs : ngsolve.BitArray, optional
                                  const string& method, py::object freedofs,
                                  double tol, int maxiter, double shift,
                                  bool save_best_result, bool save_residual_history,
-                                 bool printrates, bool conjugate) {
+                                 bool printrates, bool conjugate,
+                                 bool use_abmc, int abmc_block_size, int abmc_num_colors) {
     auto sp_freedofs = ExtractFreeDofs(freedofs);
     shared_ptr<BaseMatrix> result;
     if (mat->IsComplex()) {
@@ -349,6 +362,9 @@ freedofs : ngsolve.BitArray, optional
           sp, method, sp_freedofs, tol, maxiter, shift,
           save_best_result, save_residual_history, printrates);
       solver->SetConjugate(conjugate);
+      solver->SetUseABMC(use_abmc);
+      solver->SetABMCBlockSize(abmc_block_size);
+      solver->SetABMCNumColors(abmc_num_colors);
       result = solver;
     } else {
       auto sp = dynamic_pointer_cast<SparseMatrix<double>>(mat);
@@ -356,6 +372,9 @@ freedofs : ngsolve.BitArray, optional
       auto solver = make_shared<SparseSolvSolver<double>>(
           sp, method, sp_freedofs, tol, maxiter, shift,
           save_best_result, save_residual_history, printrates);
+      solver->SetUseABMC(use_abmc);
+      solver->SetABMCBlockSize(abmc_block_size);
+      solver->SetABMCNumColors(abmc_num_colors);
       result = solver;
     }
     return result;
@@ -370,6 +389,9 @@ freedofs : ngsolve.BitArray, optional
   py::arg("save_residual_history") = false,
   py::arg("printrates") = false,
   py::arg("conjugate") = false,
+  py::arg("use_abmc") = false,
+  py::arg("abmc_block_size") = 4,
+  py::arg("abmc_num_colors") = 4,
   R"raw_string(
 Iterative solver using the SparseSolv library by JP-MARs.
 
@@ -478,6 +500,16 @@ auto_shift : bool
 
 diagonal_scaling : bool
   Enable diagonal scaling for IC preconditioner (default: False).
+
+use_abmc : bool
+  Enable ABMC (Algebraic Block Multi-Color) ordering for parallel
+  triangular solves in the IC preconditioner (default: False).
+
+abmc_block_size : int
+  Number of rows per block for ABMC ordering (default: 4).
+
+abmc_num_colors : int
+  Number of colors for ABMC graph coloring (default: 4).
 
 )raw_string");
 }

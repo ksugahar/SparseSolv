@@ -38,9 +38,8 @@ if(SPARSESOLV_BUILD_NGSOLVE)
     )
     target_compile_features(sparsesolv_ngsolve PRIVATE cxx_std_17)
 
-    if(OpenMP_CXX_FOUND)
-        target_link_libraries(sparsesolv_ngsolve PRIVATE OpenMP::OpenMP_CXX)
-    endif()
+    # Use NGSolve TaskManager for parallel_for/parallel_reduce_sum
+    target_compile_definitions(sparsesolv_ngsolve PRIVATE SPARSESOLV_USE_NGSOLVE_TASKMANAGER)
 
     # Install the Python module next to NGSolve
     install(TARGETS sparsesolv_ngsolve

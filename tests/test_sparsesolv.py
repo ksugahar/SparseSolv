@@ -707,5 +707,345 @@ def test_hermitian_vs_direct(poisson_2d_complex):
     assert rel_err < 1e-6
 
 
+# ============================================================================
+# ABMC Ordering Tests
+# ============================================================================
+
+class TestABMCProperties:
+    """Test ABMC property accessors."""
+
+    def test_abmc_property_defaults(self, poisson_2d):
+        """ABMC properties have correct defaults."""
+        mesh, fes, a, f, *_ = poisson_2d
+        solver = SparseSolvSolver(a.mat, method="ICCG", freedofs=fes.FreeDofs())
+        assert solver.use_abmc == False
+        assert solver.abmc_block_size == 4
+        assert solver.abmc_num_colors == 4
+
+    def test_abmc_property_set(self, poisson_2d):
+        """ABMC properties can be set and read back."""
+        mesh, fes, a, f, *_ = poisson_2d
+        solver = SparseSolvSolver(a.mat, method="ICCG", freedofs=fes.FreeDofs())
+        solver.use_abmc = True
+        solver.abmc_block_size = 8
+        solver.abmc_num_colors = 6
+        assert solver.use_abmc == True
+        assert solver.abmc_block_size == 8
+        assert solver.abmc_num_colors == 6
+
+    def test_abmc_factory_parameter(self, poisson_2d):
+        """ABMC parameters can be set via factory function."""
+        mesh, fes, a, f, *_ = poisson_2d
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   use_abmc=True,
+                                   abmc_block_size=8,
+                                   abmc_num_colors=6)
+        assert solver.use_abmc == True
+        assert solver.abmc_block_size == 8
+        assert solver.abmc_num_colors == 6
+
+
+class TestABMCSolve:
+    """Test ABMC-ICCG solver correctness."""
+
+    def test_abmc_poisson_2d(self, poisson_2d):
+        """ABMC-ICCG solves 2D Poisson correctly."""
+        mesh, fes, a, f, *_ = poisson_2d
+
+        # Direct solution for reference
+        gfu_direct = GridFunction(fes)
+        gfu_direct.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
+
+        # ABMC-ICCG
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-10, maxiter=2000,
+                                   use_abmc=True,
+                                   abmc_block_size=4,
+                                   abmc_num_colors=4)
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+
+        assert solver.last_result.converged
+        diff = gfu.vec.CreateVector()
+        diff.data = gfu.vec - gfu_direct.vec
+        rel_err = Norm(diff) / Norm(gfu_direct.vec)
+        print(f"ABMC-ICCG 2D Poisson: {solver.last_result.iterations} iters, err={rel_err:.2e}")
+        assert rel_err < 1e-6
+
+    def test_abmc_poisson_3d(self):
+        """ABMC-ICCG solves 3D Poisson (larger problem)."""
+        mesh = Mesh(unit_cube.GenerateMesh(maxh=0.3))
+        fes = H1(mesh, order=2, dirichlet="left|right|top|bottom|back|front")
+        u, v = fes.TnT()
+        a = BilinearForm(fes)
+        a += grad(u) * grad(v) * dx
+        a.Assemble()
+        f = LinearForm(fes)
+        f += 1 * v * dx
+        f.Assemble()
+
+        # Direct
+        gfu_direct = GridFunction(fes)
+        gfu_direct.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
+
+        # ABMC-ICCG
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-10, maxiter=3000,
+                                   use_abmc=True,
+                                   abmc_block_size=8,
+                                   abmc_num_colors=4)
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+
+        assert solver.last_result.converged
+        diff = gfu.vec.CreateVector()
+        diff.data = gfu.vec - gfu_direct.vec
+        rel_err = Norm(diff) / Norm(gfu_direct.vec)
+        print(f"ABMC-ICCG 3D Poisson: {solver.last_result.iterations} iters, err={rel_err:.2e}")
+        assert rel_err < 1e-6
+
+    def test_abmc_curl_curl(self):
+        """ABMC-ICCG with auto_shift for semi-definite curl-curl."""
+        from netgen.occ import Box, Pnt
+        box = Box(Pnt(0, 0, 0), Pnt(1, 1, 1))
+        for face in box.faces:
+            face.name = "outer"
+        mesh = box.GenerateMesh(maxh=0.4)
+
+        fes = HCurl(mesh, order=1, dirichlet="outer", nograds=True)
+        u, v = fes.TnT()
+        a = BilinearForm(fes)
+        a += curl(u) * curl(v) * dx
+        a.Assemble()
+        f = LinearForm(fes)
+        f += CF((0, 0, 1)) * v * dx
+        f.Assemble()
+
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-8, maxiter=3000, shift=1.0,
+                                   use_abmc=True,
+                                   abmc_block_size=4,
+                                   abmc_num_colors=4)
+        solver.auto_shift = True
+        solver.diagonal_scaling = True
+
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+        print(f"ABMC curl-curl: converged={solver.last_result.converged}, "
+              f"iters={solver.last_result.iterations}")
+        assert solver.last_result.converged
+
+    def test_abmc_complex_symmetric(self, poisson_2d_complex):
+        """ABMC-ICCG with complex-symmetric system."""
+        mesh, fes, a, f, *_ = poisson_2d_complex
+
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-10, maxiter=2000,
+                                   conjugate=True,
+                                   use_abmc=True,
+                                   abmc_block_size=4,
+                                   abmc_num_colors=4)
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+
+        assert solver.last_result.converged
+        print(f"ABMC complex: {solver.last_result.iterations} iters")
+
+    def test_abmc_vs_level_schedule(self, poisson_2d):
+        """ABMC and level-scheduling produce the same solution."""
+        mesh, fes, a, f, *_ = poisson_2d
+
+        # Without ABMC (level scheduling)
+        solver_ls = SparseSolvSolver(a.mat, method="ICCG",
+                                      freedofs=fes.FreeDofs(),
+                                      tol=1e-12, maxiter=2000)
+        gfu_ls = GridFunction(fes)
+        gfu_ls.vec.data = solver_ls * f.vec
+
+        # With ABMC
+        solver_abmc = SparseSolvSolver(a.mat, method="ICCG",
+                                        freedofs=fes.FreeDofs(),
+                                        tol=1e-12, maxiter=2000,
+                                        use_abmc=True)
+        gfu_abmc = GridFunction(fes)
+        gfu_abmc.vec.data = solver_abmc * f.vec
+
+        assert solver_ls.last_result.converged
+        assert solver_abmc.last_result.converged
+
+        diff = gfu_abmc.vec.CreateVector()
+        diff.data = gfu_abmc.vec - gfu_ls.vec
+        rel_err = Norm(diff) / Norm(gfu_ls.vec)
+        print(f"ABMC vs level-schedule: rel_err={rel_err:.2e}, "
+              f"iters ABMC={solver_abmc.last_result.iterations} vs LS={solver_ls.last_result.iterations}")
+        assert rel_err < 1e-6
+
+    @pytest.mark.parametrize("block_size", [2, 4, 8, 16])
+    def test_abmc_block_size_variations(self, poisson_2d, block_size):
+        """ABMC converges with various block sizes."""
+        mesh, fes, a, f, *_ = poisson_2d
+
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-10, maxiter=2000,
+                                   use_abmc=True,
+                                   abmc_block_size=block_size,
+                                   abmc_num_colors=4)
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+
+        assert solver.last_result.converged
+        print(f"ABMC block_size={block_size}: {solver.last_result.iterations} iters")
+
+
+# ============================================================================
+# ABMC reordered space tests
+# ============================================================================
+
+class TestABMCReorderedSpace:
+    """Test CG in ABMC-reordered space (no per-iteration permutation)."""
+
+    def test_reordered_space_poisson_2d(self, poisson_2d):
+        """ABMC with CG in reordered space solves 2D Poisson correctly."""
+        mesh, fes, a, f, *_ = poisson_2d
+
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-10, maxiter=2000,
+                                   use_abmc=True,
+                                   abmc_block_size=4,
+                                   abmc_num_colors=4)
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+
+        assert solver.last_result.converged
+        # Compare with direct solver
+        gfu_direct = GridFunction(fes)
+        gfu_direct.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
+
+        diff = gfu.vec.CreateVector()
+        diff.data = gfu.vec - gfu_direct.vec
+        rel_err = Norm(diff) / Norm(gfu_direct.vec)
+        print(f"ABMC reordered-space 2D: {solver.last_result.iterations} iters, err={rel_err:.2e}")
+        assert rel_err < 1e-6
+
+    def test_reordered_space_vs_level_schedule(self, poisson_2d):
+        """Reordered-space ABMC and level scheduling give same solution."""
+        mesh, fes, a, f, *_ = poisson_2d
+
+        # Level scheduling (no ABMC)
+        solver_ls = SparseSolvSolver(a.mat, method="ICCG",
+                                      freedofs=fes.FreeDofs(),
+                                      tol=1e-12, maxiter=2000)
+        gfu_ls = GridFunction(fes)
+        gfu_ls.vec.data = solver_ls * f.vec
+
+        # ABMC (CG in reordered space)
+        solver_abmc = SparseSolvSolver(a.mat, method="ICCG",
+                                        freedofs=fes.FreeDofs(),
+                                        tol=1e-12, maxiter=2000,
+                                        use_abmc=True,
+                                        abmc_block_size=4,
+                                        abmc_num_colors=4)
+        gfu_abmc = GridFunction(fes)
+        gfu_abmc.vec.data = solver_abmc * f.vec
+
+        assert solver_ls.last_result.converged
+        assert solver_abmc.last_result.converged
+
+        diff = gfu_ls.vec.CreateVector()
+        diff.data = gfu_ls.vec - gfu_abmc.vec
+        rel_err = Norm(diff) / Norm(gfu_ls.vec)
+        print(f"Reordered vs LS: rel_err={rel_err:.2e}, "
+              f"iters LS={solver_ls.last_result.iterations} / "
+              f"ABMC={solver_abmc.last_result.iterations}")
+        assert rel_err < 1e-6
+
+    def test_reordered_space_diagonal_scaling(self):
+        """Reordered-space ABMC with diagonal scaling."""
+        from netgen.occ import Box, Pnt
+        box = Box(Pnt(0, 0, 0), Pnt(1, 1, 1))
+        for face in box.faces:
+            face.name = "outer"
+        mesh = box.GenerateMesh(maxh=0.4)
+
+        fes = HCurl(mesh, order=1, dirichlet="outer", nograds=True)
+        u, v = fes.TnT()
+        a = BilinearForm(fes)
+        a += curl(u) * curl(v) * dx
+        a.Assemble()
+        f = LinearForm(fes)
+        f += CF((0, 0, 1)) * v * dx
+        f.Assemble()
+
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-8, maxiter=3000, shift=1.0,
+                                   use_abmc=True,
+                                   abmc_block_size=4,
+                                   abmc_num_colors=4)
+        solver.auto_shift = True
+        solver.diagonal_scaling = True
+
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+        print(f"ABMC reordered diag_scaling: converged={solver.last_result.converged}, "
+              f"iters={solver.last_result.iterations}")
+        assert solver.last_result.converged
+
+    def test_reordered_space_3d_poisson(self):
+        """Reordered-space ABMC on 3D Poisson."""
+        mesh = Mesh(unit_cube.GenerateMesh(maxh=0.2))
+        fes = H1(mesh, order=1, dirichlet="left|right|top|bottom|front|back")
+        u, v = fes.TnT()
+        a = BilinearForm(fes)
+        a += grad(u) * grad(v) * dx
+        a.Assemble()
+        f = LinearForm(fes)
+        f += 1 * v * dx
+        f.Assemble()
+
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-10, maxiter=3000,
+                                   use_abmc=True,
+                                   abmc_block_size=8,
+                                   abmc_num_colors=4)
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+
+        # Compare with direct solver
+        gfu_direct = GridFunction(fes)
+        gfu_direct.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse="sparsecholesky") * f.vec
+
+        diff = gfu.vec.CreateVector()
+        diff.data = gfu.vec - gfu_direct.vec
+        rel_err = Norm(diff) / Norm(gfu_direct.vec)
+        print(f"ABMC reordered 3D: {solver.last_result.iterations} iters, err={rel_err:.2e}")
+        assert rel_err < 1e-6
+
+    def test_reordered_space_complex(self, poisson_2d_complex):
+        """Reordered-space ABMC with complex-symmetric system."""
+        mesh, fes, a, f, *_ = poisson_2d_complex
+
+        solver = SparseSolvSolver(a.mat, method="ICCG",
+                                   freedofs=fes.FreeDofs(),
+                                   tol=1e-10, maxiter=2000,
+                                   conjugate=True,
+                                   use_abmc=True,
+                                   abmc_block_size=4,
+                                   abmc_num_colors=4)
+        gfu = GridFunction(fes)
+        gfu.vec.data = solver * f.vec
+        print(f"ABMC reordered complex: converged={solver.last_result.converged}, "
+              f"iters={solver.last_result.iterations}")
+        assert solver.last_result.converged
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
