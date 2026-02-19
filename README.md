@@ -42,29 +42,54 @@ All parallel operations are abstracted via `core/parallel.hpp` with compile-time
 | `_OPENMP` | OpenMP `#pragma omp parallel for` | Standalone with OpenMP |
 | (neither) | Serial loops | Standalone without threading |
 
-## Building the NGSolve Extension Module
+## Installation
 
 ### Prerequisites
 
-- NGSolve installed (from source) with CMake config files
+- NGSolve installed (from source or pip) with CMake config files
 - CMake 3.16+
 - C++17 compiler (MSVC 2022, GCC 10+, Clang 10+)
+- pybind11 (fetched automatically by CMake if not found)
 
-### Build
+### Step 1: Build
 
 ```bash
+git clone https://github.com/ksugahar/ngsolve-sparsesolv.git
+cd ngsolve-sparsesolv
 mkdir build && cd build
+
+# Point to your NGSolve install directory containing cmake/ config files
 cmake .. -DSPARSESOLV_BUILD_NGSOLVE=ON \
          -DNGSOLVE_INSTALL_DIR=/path/to/ngsolve/install/cmake
+
 cmake --build . --config Release
 ```
 
 This produces `sparsesolv_ngsolve.pyd` (Windows) or `sparsesolv_ngsolve.so` (Linux/macOS).
 
-### Installation
+### Step 2: Install
 
-Copy the `.pyd`/`.so` file to a directory on your Python path, or to the NGSolve
-site-packages directory.
+Copy the built module to your Python path. For example:
+
+```bash
+# Find your NGSolve site-packages
+SITE_PACKAGES=$(python -c "import ngsolve, pathlib; print(pathlib.Path(ngsolve.__file__).parent.parent)")
+
+# Create package directory and copy
+mkdir -p "$SITE_PACKAGES/sparsesolv_ngsolve"
+cp build/Release/sparsesolv_ngsolve*.pyd "$SITE_PACKAGES/sparsesolv_ngsolve/"  # Windows
+# cp build/sparsesolv_ngsolve*.so "$SITE_PACKAGES/sparsesolv_ngsolve/"         # Linux/macOS
+echo "from .sparsesolv_ngsolve import *" > "$SITE_PACKAGES/sparsesolv_ngsolve/__init__.py"
+```
+
+### Step 3: Verify
+
+```bash
+python -c "import ngsolve; from sparsesolv_ngsolve import SparseSolvSolver; print('OK')"
+```
+
+Note: `import ngsolve` must be called before `import sparsesolv_ngsolve` to ensure
+NGSolve's shared libraries are loaded.
 
 ## NGSolve Usage
 
@@ -136,26 +161,25 @@ gfu = GridFunction(fes)
 gfu.vec.data = solver * f.vec
 ```
 
-### Application: Kelvin Transformation for Electromagnetic Analysis
+### Complex-Symmetric vs Hermitian Systems
 
-SparseSolv is particularly useful for Kelvin transformation problems in
-electromagnetic field analysis. The Kelvin transformation maps an infinite
-exterior domain to a bounded domain using periodic boundary conditions,
-enabling finite element analysis of open-boundary problems.
+SparseSolv supports both complex-symmetric and Hermitian systems via the
+`conjugate` parameter:
 
-**Key workflow:**
-1. Create interior domain and Kelvin-transformed exterior domain
-2. Connect them with periodic BCs using `Identify()` + `Glue()`
-3. Use NGSolve's `Periodic()` FE space
-4. Solve with SparseSolv (ICCG for H-formulation, or with auto-shift for curl-curl)
+```python
+# Complex-symmetric (A^T = A): e.g., eddy current (curl-curl + i*sigma*mass)
+# Default: conjugate=False (unconjugated inner product a^T * b)
+solver = SparseSolvSolver(a.mat, method="ICCG",
+                          freedofs=fes.FreeDofs(), tol=1e-8)
 
-Example applications:
-- Magnetic sphere in uniform field (2D/3D)
-- Parallel wire configurations
-- Coil A-formulation with unbounded domain
-- Multipole magnet analysis (dipole, quadrupole)
+# Hermitian (A^H = A): e.g., real-coefficient problem in complex FE space
+# Set conjugate=True (conjugated inner product a^H * b)
+solver = SparseSolvSolver(a.mat, method="ICCG",
+                          freedofs=fes.FreeDofs(), tol=1e-8,
+                          conjugate=True)
+```
 
-See `S:\NGSolve\NGSolve\2025_12_14_Kelvin変換\` for full examples.
+This corresponds to NGSolve's `CGSolver(conjugate=True/False)`.
 
 ### SparseSolvSolver Parameters
 
@@ -169,6 +193,7 @@ See `S:\NGSolve\NGSolve\2025_12_14_Kelvin変換\` for full examples.
 | `diagonal_scaling` | bool | `False` | Scale matrix by diagonal |
 | `save_best_result` | bool | `True` | Track and restore best iterate |
 | `save_residual_history` | bool | `False` | Record residual per iteration |
+| `conjugate` | bool | `False` | Conjugated inner product for Hermitian systems |
 | `divergence_check` | bool | `False` | Early termination on stagnation |
 | `printrates` | bool | `False` | Print convergence info to stdout |
 
