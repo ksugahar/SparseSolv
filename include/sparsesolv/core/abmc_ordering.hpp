@@ -29,6 +29,7 @@
 #include <map>
 #include <cassert>
 
+
 namespace sparsesolv {
 
 /**
@@ -38,11 +39,13 @@ namespace sparsesolv {
  * permutation arrays for reordering matrices and vectors.
  */
 struct ABMCSchedule {
-    /// color_list[c] = list of block indices assigned to color c
-    std::vector<std::vector<index_t>> color_list;
+    /// Flat CSR-like storage for color -> block mapping
+    std::vector<index_t> color_offsets;   // size: num_colors + 1
+    std::vector<index_t> color_blocks;    // flat list of block indices per color
 
-    /// block_list[b] = list of row indices (in reordered space) in block b
-    std::vector<std::vector<index_t>> block_list;
+    /// Flat CSR-like storage for block -> row mapping
+    std::vector<index_t> block_offsets;   // size: num_blocks + 1
+    std::vector<index_t> block_rows;      // flat list of row indices per block
 
     /// ordering[old_row] = new_row
     std::vector<index_t> ordering;
@@ -51,13 +54,17 @@ struct ABMCSchedule {
     std::vector<index_t> reverse_ordering;
 
     /// Check if the schedule has been built
-    bool is_built() const { return !color_list.empty(); }
+    bool is_built() const { return !color_offsets.empty(); }
 
     /// Number of colors
-    index_t num_colors() const { return static_cast<index_t>(color_list.size()); }
+    index_t num_colors() const {
+        return color_offsets.empty() ? 0 : static_cast<index_t>(color_offsets.size()) - 1;
+    }
 
     /// Number of blocks
-    index_t num_blocks() const { return static_cast<index_t>(block_list.size()); }
+    index_t num_blocks() const {
+        return block_offsets.empty() ? 0 : static_cast<index_t>(block_offsets.size()) - 1;
+    }
 
     /**
      * @brief Build ABMC schedule from sparse matrix pattern
@@ -92,8 +99,9 @@ struct ABMCSchedule {
         // Stage 2: Build block-level adjacency graph (CSR)
         std::vector<index_t> blk_row_ptr;
         std::vector<index_t> blk_col_idx;
-        build_block_graph(row_ptr, col_idx, n, actual_num_blocks,
-                          block_assign, blk_row_ptr, blk_col_idx);
+        build_block_graph(row_ptr, col_idx, actual_num_blocks,
+                          raw_block_list, block_assign,
+                          blk_row_ptr, blk_col_idx);
 
         // Stage 3: Multi-color the block graph
         std::vector<std::vector<index_t>> blk_color_list;
@@ -106,12 +114,15 @@ struct ABMCSchedule {
         // Stage 4: Build final row ordering from block ordering
         build_row_ordering(n, actual_num_blocks, raw_block_list,
                            blk_color_list, blk_reverse_ordering);
+
     }
 
     /// Clear all data
     void clear() {
-        color_list.clear();
-        block_list.clear();
+        color_offsets.clear();
+        color_blocks.clear();
+        block_offsets.clear();
+        block_rows.clear();
         ordering.clear();
         reverse_ordering.clear();
     }
@@ -137,6 +148,7 @@ private:
         std::vector<std::vector<index_t>>& raw_block_list,
         std::vector<index_t>& block_assign)
     {
+        // block_assign values: -1 = unassigned, -2 = in BFS queue, >= 0 = assigned
         raw_block_list.clear();
         raw_block_list.reserve(max_blocks);
 
@@ -158,11 +170,12 @@ private:
             block_assign[next_unassigned] = blk_id;
             current_block.push_back(next_unassigned);
 
-            // Enqueue neighbors of the seed
+            // Enqueue neighbors of the seed (mark as -2 to avoid duplicates)
             for (index_t k = row_ptr[next_unassigned]; k < row_ptr[next_unassigned + 1]; ++k) {
                 index_t j = col_idx[k];
-                if (j != next_unassigned && block_assign[j] < 0) {
+                if (block_assign[j] == -1) {
                     bfs_queue.push(j);
+                    block_assign[j] = -2;
                 }
             }
 
@@ -179,17 +192,24 @@ private:
 
                 if (static_cast<int>(current_block.size()) >= block_size) break;
 
-                // Enqueue unassigned neighbors
+                // Enqueue unassigned neighbors (only those not already queued)
                 for (index_t k = row_ptr[row]; k < row_ptr[row + 1]; ++k) {
                     index_t j = col_idx[k];
-                    if (block_assign[j] < 0) {
+                    if (block_assign[j] == -1) {
                         bfs_queue.push(j);
+                        block_assign[j] = -2;
                     }
                 }
             }
 
-            // Clear queue for next block
-            while (!bfs_queue.empty()) bfs_queue.pop();
+            // Reset queued-but-unassigned nodes back to -1 for next block
+            while (!bfs_queue.empty()) {
+                index_t row = bfs_queue.front();
+                bfs_queue.pop();
+                if (block_assign[row] == -2) {
+                    block_assign[row] = -1;
+                }
+            }
         }
 
         // Handle any remaining unassigned rows (shouldn't happen normally)
@@ -211,29 +231,27 @@ private:
      * connecting to a row in the other block.
      */
     static void build_block_graph(
-        const index_t* row_ptr, const index_t* col_idx, index_t n,
-        index_t num_blocks, const std::vector<index_t>& block_assign,
+        const index_t* row_ptr, const index_t* col_idx,
+        index_t num_blocks,
+        const std::vector<std::vector<index_t>>& raw_block_list,
+        const std::vector<index_t>& block_assign,
         std::vector<index_t>& blk_row_ptr,
         std::vector<index_t>& blk_col_idx)
     {
-        // Use set of neighbors per block to avoid duplicates
+        // Iterate block-by-block so that last_seen[bj] = bi correctly deduplicates
         std::vector<std::vector<index_t>> neighbors(num_blocks);
+        std::vector<index_t> last_seen(num_blocks, static_cast<index_t>(-1));
 
-        for (index_t i = 0; i < n; ++i) {
-            index_t bi = block_assign[i];
-            for (index_t k = row_ptr[i]; k < row_ptr[i + 1]; ++k) {
-                index_t j = col_idx[k];
-                index_t bj = block_assign[j];
-                if (bi != bj) {
-                    neighbors[bi].push_back(bj);
+        for (index_t bi = 0; bi < num_blocks; ++bi) {
+            for (index_t row : raw_block_list[bi]) {
+                for (index_t k = row_ptr[row]; k < row_ptr[row + 1]; ++k) {
+                    index_t bj = block_assign[col_idx[k]];
+                    if (bi != bj && last_seen[bj] != bi) {
+                        last_seen[bj] = bi;
+                        neighbors[bi].push_back(bj);
+                    }
                 }
             }
-        }
-
-        // Sort and deduplicate each block's neighbor list
-        for (auto& nbrs : neighbors) {
-            std::sort(nbrs.begin(), nbrs.end());
-            nbrs.erase(std::unique(nbrs.begin(), nbrs.end()), nbrs.end());
         }
 
         // Convert to CSR
@@ -253,11 +271,11 @@ private:
     }
 
     /**
-     * @brief Greedy multi-color ordering of a graph
+     * @brief Greedy multi-color ordering of a graph using forbidden-color-set
      *
      * Assigns colors to nodes such that no two adjacent nodes in the
-     * lower-triangular part share the same color. The coloring is greedy:
-     * process nodes in order, cycling through candidate colors.
+     * lower-triangular part share the same color. Uses a sentinel-based
+     * forbidden array for O(degree) coloring per node.
      *
      * @param row_ptr CSR row pointer of the graph
      * @param col_idx CSR column indices
@@ -290,44 +308,43 @@ private:
             }
         }
 
-        // Greedy coloring
+        // Greedy coloring with forbidden-color-set approach: O(degree) per node
         std::vector<index_t> node_color(n, -1);
         out_color_list.resize(num_colors);
         for (auto& cl : out_color_list) cl.clear();
 
-        int candidate = 0;
+        // Sentinel-based forbidden array: forbidden[c] == i means color c
+        // is used by a lower-triangular neighbor of node i
+        std::vector<index_t> forbidden(num_colors, static_cast<index_t>(-1));
+
         for (index_t i = 0; i < n; ++i) {
-            // Try to assign candidate color, check for conflicts
-            bool assigned = false;
-            for (int trial = 0; trial < num_colors && !assigned; ++trial) {
-                int test_color = (candidate + trial) % num_colors;
-                bool conflict = false;
-
-                // Check lower-triangular neighbors
-                for (index_t k = row_ptr[i]; k < row_ptr[i + 1]; ++k) {
-                    index_t j = col_idx[k];
-                    if (j < i && node_color[j] == test_color) {
-                        conflict = true;
-                        break;
-                    }
-                }
-
-                if (!conflict) {
-                    node_color[i] = test_color;
-                    out_color_list[test_color].push_back(i);
-                    candidate = (test_color + 1) % num_colors;
-                    assigned = true;
+            // Mark forbidden colors in one pass over neighbors
+            for (index_t k = row_ptr[i]; k < row_ptr[i + 1]; ++k) {
+                index_t j = col_idx[k];
+                if (j < i && node_color[j] >= 0) {
+                    forbidden[node_color[j]] = i;
                 }
             }
 
-            // Fallback: if all colors conflict, create a new color
-            if (!assigned) {
-                node_color[i] = num_colors;
-                out_color_list.emplace_back();
-                out_color_list[num_colors].push_back(i);
-                candidate = (num_colors + 1) % (num_colors + 1);
+            // Pick first available color
+            int chosen = -1;
+            for (int c = 0; c < num_colors; ++c) {
+                if (forbidden[c] != i) {
+                    chosen = c;
+                    break;
+                }
+            }
+
+            // All existing colors conflict: create a new color
+            if (chosen < 0) {
+                chosen = num_colors;
                 ++num_colors;
+                forbidden.push_back(static_cast<index_t>(-1));
+                out_color_list.emplace_back();
             }
+
+            node_color[i] = chosen;
+            out_color_list[chosen].push_back(i);
         }
 
         // Remove empty color groups
@@ -360,41 +377,53 @@ private:
      */
     void build_row_ordering(
         index_t n, index_t actual_num_blocks,
-        const std::vector<std::vector<index_t>>& raw_block_list,
+        std::vector<std::vector<index_t>>& raw_block_list,
         const std::vector<std::vector<index_t>>& blk_color_list,
         const std::vector<index_t>& /*blk_reverse_ordering*/)
     {
+        const index_t nc = static_cast<index_t>(blk_color_list.size());
         ordering.resize(n);
         reverse_ordering.resize(n);
 
-        // Rebuild color_list and block_list in the new ordering
-        color_list.resize(blk_color_list.size());
-        block_list.resize(actual_num_blocks);
+        // Build flat color -> block mapping
+        color_offsets.resize(nc + 1);
+        color_offsets[0] = 0;
+        for (index_t c = 0; c < nc; ++c) {
+            color_offsets[c + 1] = color_offsets[c] +
+                static_cast<index_t>(blk_color_list[c].size());
+        }
+        color_blocks.resize(color_offsets[nc]);
+
+        // Build flat block -> row mapping
+        block_offsets.resize(actual_num_blocks + 1);
+        block_rows.reserve(n);
+        block_rows.clear();
 
         index_t row_idx = 0;
         index_t global_blk_id = 0;
-        for (index_t c = 0; c < static_cast<index_t>(blk_color_list.size()); ++c) {
-            color_list[c].clear();
-            for (index_t orig_blk : blk_color_list[c]) {
-                // blk_color_list[c] already contains original block indices
-                color_list[c].push_back(global_blk_id);
+        for (index_t c = 0; c < nc; ++c) {
+            for (index_t bi = 0; bi < static_cast<index_t>(blk_color_list[c].size()); ++bi) {
+                index_t orig_blk = blk_color_list[c][bi];
+                color_blocks[color_offsets[c] + bi] = global_blk_id;
 
-                // Sort rows within block for better locality
-                auto rows = raw_block_list[orig_blk];
+                // Sort rows within block in-place for better locality
+                auto& rows = raw_block_list[orig_blk];
                 std::sort(rows.begin(), rows.end());
 
-                block_list[global_blk_id].clear();
+                block_offsets[global_blk_id] = row_idx;
                 for (index_t orig_row : rows) {
                     ordering[orig_row] = row_idx;
                     reverse_ordering[row_idx] = orig_row;
-                    block_list[global_blk_id].push_back(row_idx);
+                    block_rows.push_back(row_idx);
                     ++row_idx;
                 }
                 ++global_blk_id;
             }
         }
+        block_offsets[actual_num_blocks] = row_idx;
 
         assert(row_idx == n);
+        assert(global_blk_id == actual_num_blocks);
     }
 };
 

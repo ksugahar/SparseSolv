@@ -17,6 +17,8 @@
 #include "types.hpp"
 #include <type_traits>
 #include <complex>
+#include <atomic>
+#include <thread>
 
 #ifdef SPARSESOLV_USE_NGSOLVE_TASKMANAGER
   #include <core/taskmanager.hpp>
@@ -88,6 +90,64 @@ inline T parallel_reduce_sum(index_t n, FUNC f, T init = T(0)) {
     return sum;
 #endif
 }
+
+/**
+ * @brief Get the number of available parallel threads
+ */
+inline int get_num_threads() {
+#ifdef SPARSESOLV_USE_NGSOLVE_TASKMANAGER
+    return ngcore::TaskManager::GetNumThreads();
+#elif defined(_OPENMP)
+    return omp_get_max_threads();
+#else
+    return 1;
+#endif
+}
+
+/**
+ * @brief Spin-barrier for synchronizing threads within a persistent parallel region
+ *
+ * Uses sense-reversing algorithm with std::atomic for C++17 compatibility.
+ * Designed for use inside a single parallel_for(nthreads, ...) where each
+ * index maps to a separate thread, enabling level-by-level synchronization
+ * without repeated parallel_for dispatch overhead.
+ *
+ * Requirements:
+ * - Must be called with exactly num_threads concurrent threads
+ * - All threads must call wait() the same number of times
+ */
+class SpinBarrier {
+public:
+    explicit SpinBarrier(int num_threads)
+        : num_threads_(num_threads) {
+        count_.store(0, std::memory_order_relaxed);
+        sense_.store(0, std::memory_order_relaxed);
+    }
+
+    void wait() {
+        int my_sense = sense_.load(std::memory_order_acquire);
+        if (count_.fetch_add(1, std::memory_order_acq_rel) == num_threads_ - 1) {
+            // Last thread to arrive: reset counter and flip sense
+            count_.store(0, std::memory_order_relaxed);
+            sense_.fetch_add(1, std::memory_order_release);
+        } else {
+            // Spin until the last thread flips the sense
+            int spins = 0;
+            while (sense_.load(std::memory_order_acquire) == my_sense) {
+                if (++spins > 4096) {
+                    std::this_thread::yield();
+                    spins = 0;
+                }
+            }
+        }
+    }
+
+private:
+    // Separate cache lines to avoid false sharing
+    alignas(64) std::atomic<int> count_;
+    alignas(64) std::atomic<int> sense_;
+    int num_threads_;
+};
 
 } // namespace sparsesolv
 

@@ -1,6 +1,7 @@
 # Build directories
 /build/
 /build_*/
+/build-pip/
 
 # IDE
 /.vs/
@@ -18,3 +19,13 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# NGSolve trace files
+*.trace
+*.html
+
+# Benchmark results
+*.json
+
+# Claude sessions
+.claude/

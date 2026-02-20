@@ -13,8 +13,9 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(sparsesolv_ngsolve, m) {
-    // Import NGSolve's la module so pybind11 knows about BaseMatrix, SparseMatrix, etc.
+    // Import NGSolve modules so pybind11 knows about BaseMatrix, BilinearForm, etc.
     py::module_::import("ngsolve.la");
+    py::module_::import("ngsolve.comp");
 
     m.doc() = "SparseSolv iterative solvers for NGSolve\n\n"
               "Provides IC/SGS preconditioners and ICCG/SGSMRTR iterative solvers\n"

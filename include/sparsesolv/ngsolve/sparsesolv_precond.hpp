@@ -1,34 +1,5 @@
-/**
- * @file sparsesolv_precond.hpp
- * @brief SparseSolv preconditioners integrated with NGSolve
- *
- * Provides IC (Incomplete Cholesky) and SGS (Symmetric Gauss-Seidel)
- * preconditioners for use with NGSolve's Krylov solvers.
- *
- * These preconditioners support Dirichlet boundary conditions through
- * the freedofs parameter (BitArray).
- *
- * @code
- * from ngsolve import *
- * from ngsolve.krylovspace import CGSolver
- *
- * # Create bilinear form with Dirichlet BC
- * fes = H1(mesh, order=2, dirichlet="left|right|top|bottom")
- * a = BilinearForm(fes)
- * a += grad(u)*grad(v)*dx
- * a.Assemble()
- *
- * # Create IC preconditioner with FreeDofs
- * pre = ICPreconditioner(a.mat, freedofs=fes.FreeDofs(), shift=1.05)
- * pre.Update()
- *
- * # Use with CGSolver
- * inv = CGSolver(a.mat, pre, printrates=True, tol=1e-10)
- * gfu.vec.data = inv * f.vec
- * @endcode
- *
- * Based on JP-MARs/SparseSolv (https://github.com/JP-MARs/SparseSolv)
- */
+/// @file sparsesolv_precond.hpp
+/// @brief SparseSolv preconditioners (IC, SGS, BDDC) as NGSolve BaseMatrix wrappers
 
 #ifndef NGSOLVE_SPARSESOLV_PRECOND_HPP
 #define NGSOLVE_SPARSESOLV_PRECOND_HPP
@@ -41,13 +12,6 @@
 
 namespace ngla {
 
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/**
- * @brief Helper to extract raw data pointer from NGSolve vectors
- */
 template<typename SCAL>
 const SCAL* GetVectorData(const BaseVector& vec) {
     return vec.FV<SCAL>().Data();
@@ -62,22 +26,7 @@ SCAL* GetVectorData(BaseVector& vec) {
 // Preconditioner Base Class
 // ============================================================================
 
-/**
- * @brief Base class for SparseSolv preconditioners in NGSolve
- *
- * Provides common functionality for all SparseSolv preconditioner wrappers:
- * - NGSolve SparseMatrix to SparseSolv SparseMatrixView conversion
- * - FreeDofs handling (constrained DOFs become identity rows/columns)
- * - Mult/MultAdd with FreeDofs zero-out
- * - VHeight/VWidth/CreateRowVector/CreateColVector
- *
- * Derived classes only need to implement:
- * - Constructor (create the specific sparsesolv preconditioner)
- * - Update() (call prepare_matrix_view() + precond setup)
- * - apply_precond() (delegate to the specific preconditioner)
- *
- * @tparam SCAL Scalar type (double or Complex)
- */
+/// Base class: NGSolve SparseMatrix → SparseSolv view, FreeDofs handling
 template<typename SCAL>
 class SparseSolvPrecondBase : public BaseMatrix {
 protected:
@@ -99,12 +48,7 @@ protected:
         , width_(static_cast<sparsesolv::index_t>(mat->Width()))
     {}
 
-    /**
-     * @brief Convert NGSolve SparseMatrix to SparseSolv SparseMatrixView
-     *
-     * Handles FreeDofs: constrained DOFs get identity rows/columns
-     * (diagonal = 1, off-diagonals = 0).
-     */
+    /// Convert NGSolve SparseMatrix to SparseSolv view (identity rows for constrained DOFs)
     sparsesolv::SparseMatrixView<SCAL> prepare_matrix_view() {
         const auto& firsti = mat_->GetFirstArray();
         const auto& colnr = mat_->GetColIndices();
@@ -155,11 +99,7 @@ protected:
         }
     }
 
-    /**
-     * @brief Apply the underlying SparseSolv preconditioner
-     *
-     * Derived classes implement this to delegate to their specific preconditioner.
-     */
+    /// Apply the underlying SparseSolv preconditioner (implemented by derived classes)
     virtual void apply_precond(const SCAL* x, SCAL* y) const = 0;
 
 public:
@@ -213,15 +153,6 @@ public:
 // ============================================================================
 // IC Preconditioner
 // ============================================================================
-
-/**
- * @brief Incomplete Cholesky Preconditioner for NGSolve
- *
- * Uses shifted IC decomposition for improved stability.
- * Supports Dirichlet boundary conditions through freedofs parameter.
- *
- * @tparam SCAL Scalar type (double or Complex)
- */
 template<typename SCAL = double>
 class SparseSolvICPreconditioner : public SparseSolvPrecondBase<SCAL> {
 public:
@@ -258,14 +189,6 @@ private:
 // ============================================================================
 // SGS Preconditioner
 // ============================================================================
-
-/**
- * @brief Symmetric Gauss-Seidel Preconditioner for NGSolve
- *
- * Supports Dirichlet boundary conditions through freedofs parameter.
- *
- * @tparam SCAL Scalar type (double or Complex)
- */
 template<typename SCAL = double>
 class SparseSolvSGSPreconditioner : public SparseSolvPrecondBase<SCAL> {
 public:
@@ -289,17 +212,142 @@ private:
     shared_ptr<sparsesolv::SGSPreconditioner<SCAL>> precond_;
 };
 
+// ============================================================================
+// BDDC Preconditioner
+// ============================================================================
+template<typename SCAL = double>
+class SparseSolvBDDCPreconditioner : public SparseSolvPrecondBase<SCAL> {
+public:
+    SparseSolvBDDCPreconditioner(
+        shared_ptr<SparseMatrix<SCAL>> mat,
+        shared_ptr<BitArray> freedofs,
+        std::vector<std::vector<sparsesolv::index_t>> element_dofs,
+        std::vector<sparsesolv::DOFType> dof_types,
+        std::vector<sparsesolv::DenseMatrix<SCAL>> element_matrices,
+        std::string coarse_inverse = "sparsecholesky")
+        : SparseSolvPrecondBase<SCAL>(mat, freedofs)
+        , element_dofs_(std::move(element_dofs))
+        , dof_types_(std::move(dof_types))
+        , element_matrices_(std::move(element_matrices))
+        , coarse_inverse_type_(std::move(coarse_inverse))
+        , precond_(std::make_shared<sparsesolv::BDDCPreconditioner<SCAL>>())
+    {}
+
+    void Update() {
+        auto view = this->prepare_matrix_view();
+        precond_->set_element_info(element_dofs_, dof_types_);
+
+        // Pass element matrices for element-by-element mode
+        if (!element_matrices_.empty())
+            precond_->set_element_matrices(element_matrices_);
+
+        // Tell BDDC to skip dense coarse inverse if we'll use NGSolve's solver
+        bool use_ngsolve_coarse = !element_matrices_.empty() &&
+                                   coarse_inverse_type_ != "dense";
+        if (use_ngsolve_coarse)
+            precond_->set_use_external_coarse(true);
+
+        // Pass free DOF information to BDDC
+        if (this->freedofs_) {
+            std::vector<bool> free_dofs(this->height_);
+            for (sparsesolv::index_t i = 0; i < this->height_; ++i)
+                free_dofs[i] = this->freedofs_->Test(i);
+            precond_->set_free_dofs(std::move(free_dofs));
+        }
+
+        precond_->setup(view);
+
+        // Build NGSolve sparse direct inverse for wirebasket coarse solve
+        if (use_ngsolve_coarse)
+            build_ngsolve_coarse_inverse();
+    }
+
+    sparsesolv::index_t NumWirebasketDofs() const {
+        return precond_->num_wirebasket_dofs();
+    }
+    sparsesolv::index_t NumInterfaceDofs() const {
+        return precond_->num_interface_dofs();
+    }
+    bool IsElementMode() const {
+        return precond_->is_element_mode();
+    }
+
+    const std::string& GetCoarseInverseType() const { return coarse_inverse_type_; }
+
+protected:
+    void apply_precond(const SCAL* x, SCAL* y) const override {
+        precond_->apply(x, y, this->height_);
+    }
+
+private:
+    /// Build NGSolve sparse direct inverse (PARDISO/SparseCholesky) for wirebasket coarse solve
+    void build_ngsolve_coarse_inverse() {
+        const auto& wb_csr = precond_->wirebasket_csr();
+        sparsesolv::index_t n_wb = precond_->num_wirebasket_dofs();
+
+        // Build n_wb x n_wb SparseMatrix from CSR data
+
+        // Create NGSolve SparseMatrix from wirebasket CSR
+        Array<int> elsperrow(n_wb);
+        for (sparsesolv::index_t i = 0; i < n_wb; ++i)
+            elsperrow[i] = wb_csr.row_ptr[i + 1] - wb_csr.row_ptr[i];
+
+        auto sp_mat = make_shared<SparseMatrix<SCAL>>(elsperrow, n_wb);
+        for (sparsesolv::index_t i = 0; i < n_wb; ++i) {
+            auto cols = sp_mat->GetRowIndices(i);
+            auto vals = sp_mat->GetRowValues(i);
+            sparsesolv::index_t off = wb_csr.row_ptr[i];
+            for (int k = 0; k < elsperrow[i]; ++k) {
+                cols[k] = wb_csr.col_idx[off + k];
+                vals[k] = wb_csr.values[off + k];
+            }
+        }
+
+        // Keep SparseMatrix alive (inverse holds a reference to it)
+        coarse_mat_ = sp_mat;
+
+        // Create sparse direct inverse
+        sp_mat->SetInverseType(coarse_inverse_type_);
+        coarse_inv_ = sp_mat->InverseMatrix();
+
+        // Pre-allocate work vectors
+        coarse_rhs_ = make_shared<VVector<SCAL>>(n_wb);
+        coarse_sol_ = make_shared<VVector<SCAL>>(n_wb);
+
+        // Set coarse solver callback on BDDC preconditioner
+        precond_->set_coarse_solver(
+            [this](const SCAL* rhs, SCAL* sol) {
+                auto n = precond_->num_wirebasket_dofs();
+                auto rhs_fv = coarse_rhs_->FV<SCAL>();
+                auto sol_fv = coarse_sol_->FV<SCAL>();
+                for (sparsesolv::index_t i = 0; i < n; ++i)
+                    rhs_fv[i] = rhs[i];
+                coarse_inv_->Mult(*coarse_rhs_, *coarse_sol_);
+                for (sparsesolv::index_t i = 0; i < n; ++i)
+                    sol[i] = sol_fv[i];
+            });
+    }
+
+    std::vector<std::vector<sparsesolv::index_t>> element_dofs_;
+    std::vector<sparsesolv::DOFType> dof_types_;
+    std::vector<sparsesolv::DenseMatrix<SCAL>> element_matrices_;
+    std::string coarse_inverse_type_;
+    shared_ptr<sparsesolv::BDDCPreconditioner<SCAL>> precond_;
+
+    // NGSolve coarse solver (when coarse_inverse_type_ != "dense")
+    shared_ptr<BaseMatrix> coarse_mat_;  // wirebasket SparseMatrix (must outlive coarse_inv_)
+    shared_ptr<BaseMatrix> coarse_inv_;
+    mutable shared_ptr<BaseVector> coarse_rhs_;
+    mutable shared_ptr<BaseVector> coarse_sol_;
+};
+
 // Type aliases for convenience
 using ICPreconditioner = SparseSolvICPreconditioner<double>;
 using SGSPreconditioner = SparseSolvSGSPreconditioner<double>;
 
 // ============================================================================
-// Solver Result (returned to Python)
+// Solver Result
 // ============================================================================
-
-/**
- * @brief Result of a SparseSolv iterative solve
- */
 struct SparseSolvResult {
     bool converged = false;
     int iterations = 0;
@@ -308,56 +356,13 @@ struct SparseSolvResult {
 };
 
 // ============================================================================
-// SparseSolv Iterative Solver for NGSolve
+// SparseSolv Iterative Solver
 // ============================================================================
 
-/**
- * @brief Unified iterative solver using SparseSolv library
- *
- * Supports multiple solver methods:
- * - "ICCG": Conjugate Gradient with Incomplete Cholesky preconditioner
- * - "SGSMRTR": MRTR with built-in Symmetric Gauss-Seidel (split formula)
- * - "CG": Conjugate Gradient without preconditioner
- *
- * Key features:
- * - save_best_result: tracks best solution during iteration (default: true)
- *   If the solver doesn't converge, the best solution found is returned.
- * - save_residual_history: records residual at each iteration
- * - FreeDofs support for Dirichlet boundary conditions
- *
- * Can be used as an inverse operator (BaseMatrix) or with Solve() for
- * detailed result access.
- *
- * @code
- * from ngsolve import *
- *
- * # As inverse operator (like NGSolve's CGSolver)
- * solver = SparseSolvSolver(a.mat, method="ICCG",
- *                           freedofs=fes.FreeDofs(), tol=1e-10)
- * gfu.vec.data = solver * f.vec
- *
- * # Or with detailed results
- * result = solver.Solve(f.vec, gfu.vec)
- * print(f"Converged: {result.converged}, iterations: {result.iterations}")
- * @endcode
- *
- * @tparam SCAL Scalar type (double or Complex)
- */
+/// Unified iterative solver: ICCG, SGSMRTR, CG. Use as BaseMatrix or .Solve().
 template<typename SCAL = double>
 class SparseSolvSolver : public BaseMatrix {
 public:
-    /**
-     * @brief Construct solver
-     * @param mat The sparse matrix (system matrix A)
-     * @param method Solver method: "ICCG", "SGSMRTR", "CG"
-     * @param freedofs BitArray indicating free DOFs (nullptr = all free)
-     * @param tol Relative tolerance for convergence (default: 1e-10)
-     * @param maxiter Maximum number of iterations (default: 1000)
-     * @param shift Shift parameter for IC preconditioner (default: 1.05)
-     * @param save_best_result Save best solution during iteration (default: true)
-     * @param save_residual_history Save residual at each iteration (default: false)
-     * @param printrates Print convergence information (default: false)
-     */
     SparseSolvSolver(shared_ptr<SparseMatrix<SCAL>> mat,
                       const string& method = "ICCG",
                       shared_ptr<BitArray> freedofs = nullptr,
@@ -381,11 +386,7 @@ public:
         config_.save_residual_history = save_residual_history;
     }
 
-    /**
-     * @brief Solve Ax = b, x initialized to zero (BaseMatrix interface)
-     *
-     * Use as: gfu.vec.data = solver * f.vec
-     */
+    /// Solve Ax = b, x initialized to zero
     void Mult(const BaseVector& x, BaseVector& y) const override {
         y = 0.0;
         Solve(x, y);
@@ -398,13 +399,7 @@ public:
         y += s * *temp;
     }
 
-    /**
-     * @brief Solve Ax = b with initial guess, returning detailed results
-     *
-     * @param rhs Right-hand side vector b
-     * @param sol Solution vector x (initial guess on input, solution on output)
-     * @return SparseSolvResult with convergence info, iterations, residual history
-     */
+    /// Solve Ax = b with initial guess, returns SparseSolvResult
     SparseSolvResult Solve(const BaseVector& rhs, BaseVector& sol) const {
         // Prepare matrix view (with FreeDofs handling)
         auto view = prepare_matrix();
@@ -530,6 +525,10 @@ public:
     void SetABMCBlockSize(int bs) { config_.abmc_block_size = bs; }
     int GetABMCNumColors() const { return config_.abmc_num_colors; }
     void SetABMCNumColors(int nc) { config_.abmc_num_colors = nc; }
+    bool GetABMCReorderSpMV() const { return config_.abmc_reorder_spmv; }
+    void SetABMCReorderSpMV(bool enable) { config_.abmc_reorder_spmv = enable; }
+    bool GetABMCUseRCM() const { return config_.abmc_use_rcm; }
+    void SetABMCUseRCM(bool enable) { config_.abmc_use_rcm = enable; }
 
     // Divergence detection
     bool GetDivergenceCheck() const {
@@ -548,12 +547,6 @@ public:
     const SparseSolvResult& GetLastResult() const { return last_result_; }
 
 private:
-    /**
-     * @brief Prepare SparseMatrixView with FreeDofs handling
-     *
-     * Converts NGSolve's SparseMatrix to SparseSolv's SparseMatrixView.
-     * For constrained DOFs: diagonal = 1, off-diagonals = 0 (identity row/col).
-     */
     sparsesolv::SparseMatrixView<SCAL> prepare_matrix() const {
         const auto& firsti = mat_->GetFirstArray();
         const auto& colnr = mat_->GetColIndices();

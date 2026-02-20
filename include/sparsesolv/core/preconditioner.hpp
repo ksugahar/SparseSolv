@@ -1,7 +1,5 @@
-/**
- * @file preconditioner.hpp
- * @brief Base class for preconditioners
- */
+/// @file preconditioner.hpp
+/// @brief Base class for preconditioners
 
 #ifndef SPARSESOLV_CORE_PRECONDITIONER_HPP
 #define SPARSESOLV_CORE_PRECONDITIONER_HPP
@@ -15,36 +13,7 @@
 
 namespace sparsesolv {
 
-/**
- * @brief Abstract base class for preconditioners
- *
- * A preconditioner approximates M^{-1} for a matrix A, where M is chosen
- * such that M^{-1}A has better spectral properties than A. This accelerates
- * convergence of iterative solvers.
- *
- * To implement a preconditioner:
- * 1. Override setup() to compute the preconditioner from matrix A
- * 2. Override apply() to compute y = M^{-1} * x
- * 3. Override name() to return a descriptive name
- *
- * Example:
- * @code
- * class MyPreconditioner : public Preconditioner<double> {
- * public:
- *     void setup(const SparseMatrixView<double>& A) override {
- *         // Compute preconditioner from A
- *     }
- *
- *     void apply(const double* x, double* y, index_t size) const override {
- *         // Compute y = M^{-1} * x
- *     }
- *
- *     std::string name() const override { return "MyPreconditioner"; }
- * };
- * @endcode
- *
- * @tparam Scalar The scalar type (double or complex<double>)
- */
+/// Abstract base class for preconditioners: setup(A), then apply(x, y) = M^{-1}*x
 template<typename Scalar = double>
 class Preconditioner {
 public:
@@ -52,53 +21,22 @@ public:
 
     virtual ~Preconditioner() = default;
 
-    /**
-     * @brief Setup the preconditioner from matrix A
-     *
-     * This method computes any factorization or decomposition needed
-     * for the preconditioner. It must be called before apply().
-     *
-     * @param A The matrix to precondition
-     */
     virtual void setup(const SparseMatrixView<Scalar>& A) = 0;
-
-    /**
-     * @brief Apply the preconditioner: y = M^{-1} * x
-     *
-     * @param x Input vector
-     * @param y Output vector
-     * @param size Vector size
-     */
     virtual void apply(const Scalar* x, Scalar* y, index_t size) const = 0;
 
-    /**
-     * @brief Apply the preconditioner with std::vector
-     */
     void apply(const std::vector<Scalar>& x, std::vector<Scalar>& y) const {
         assert(x.size() == y.size());
         apply(x.data(), y.data(), static_cast<index_t>(x.size()));
     }
 
-    /**
-     * @brief Get the name of the preconditioner
-     */
     virtual std::string name() const = 0;
-
-    /**
-     * @brief Check if the preconditioner has been set up
-     */
     virtual bool is_ready() const { return is_setup_; }
 
 protected:
     bool is_setup_ = false;
 };
 
-/**
- * @brief Identity preconditioner (no preconditioning)
- *
- * This is a null preconditioner that simply copies the input to output.
- * Useful as a baseline for comparison.
- */
+/// Identity preconditioner (no-op, copies x to y)
 template<typename Scalar = double>
 class IdentityPreconditioner : public Preconditioner<Scalar> {
 public:
@@ -113,11 +51,7 @@ public:
     std::string name() const override { return "Identity"; }
 };
 
-/**
- * @brief Jacobi (diagonal) preconditioner
- *
- * M = diag(A), so M^{-1} * x = x ./ diag(A)
- */
+/// Jacobi (diagonal) preconditioner: M = diag(A)
 template<typename Scalar = double>
 class JacobiPreconditioner : public Preconditioner<Scalar> {
 public:

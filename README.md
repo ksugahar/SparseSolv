@@ -15,6 +15,7 @@ pybind11 extension module (`sparsesolv_ngsolve.pyd`) that links against an insta
 ### Preconditioners
 - **IC** (Incomplete Cholesky) - shifted IC(0) with auto-shift for semi-definite systems
 - **SGS** (Symmetric Gauss-Seidel) - no factorization required
+- **BDDC** (Balancing Domain Decomposition by Constraints) - domain decomposition with wirebasket coarse space
 
 ### Iterative Solvers
 - **CG** (Conjugate Gradient) - for SPD systems
@@ -121,13 +122,31 @@ gfu.vec.data = solver * f.vec
 ### Preconditioners with NGSolve's CGSolver
 
 ```python
-from sparsesolv_ngsolve import ICPreconditioner, SGSPreconditioner
+from sparsesolv_ngsolve import ICPreconditioner, SGSPreconditioner, BDDCPreconditioner
 from ngsolve.krylovspace import CGSolver
 
 # IC preconditioner + NGSolve CG
 pre = ICPreconditioner(a.mat, freedofs=fes.FreeDofs(), shift=1.05)
 inv = CGSolver(a.mat, pre, tol=1e-10, maxiter=2000)
 gfu.vec.data = inv * f.vec
+```
+
+### BDDC Preconditioner
+
+```python
+from sparsesolv_ngsolve import BDDCPreconditioner
+from ngsolve.krylovspace import CGSolver
+
+# Recommended: pass BilinearForm + FESpace (element matrices extracted in C++)
+pre = BDDCPreconditioner(a, fes, coarse_inverse="sparsecholesky")
+inv = CGSolver(a.mat, pre, tol=1e-10)
+gfu.vec.data = inv * f.vec
+
+# Alternative: pass assembled matrix + manual element info
+pre = BDDCPreconditioner(a.mat, freedofs=fes.FreeDofs(True),
+                          element_dofs=element_dofs,
+                          dof_types=dof_types,
+                          element_matrices=element_matrices)
 ```
 
 ### 3D Curl-Curl (Semi-Definite System)
@@ -233,6 +252,7 @@ from sparsesolv_ngsolve import (
     # Factory functions (auto-dispatch real/complex based on mat.IsComplex())
     ICPreconditioner,              # Use with NGSolve's CGSolver
     SGSPreconditioner,             # Use with NGSolve's CGSolver
+    BDDCPreconditioner,            # BDDC (BilinearForm API or matrix API)
     SparseSolvSolver,              # Standalone solver (ICCG, SGSMRTR)
 
     SparseSolvResult,              # Solve result object
@@ -264,21 +284,24 @@ if (result.converged) {
 ## Directory Structure
 
 ```
-SparseSolv/
+ngsolve-sparsesolv/
 ├── include/sparsesolv/         # Header-only library
 │   ├── sparsesolv.hpp          # Main header (convenience includes)
 │   ├── core/                   # Types, config, matrix view, preconditioner base
+│   │   ├── dense_matrix.hpp    # Small dense matrix with LU inverse (for BDDC)
+│   │   ├── sparse_matrix_coo.hpp # COO sparse matrix (assembly)
+│   │   ├── sparse_matrix_csr.hpp # CSR sparse matrix (storage)
 │   │   ├── parallel.hpp        # Parallelism abstraction (TaskManager/OpenMP/serial)
 │   │   ├── level_schedule.hpp  # Level scheduling for triangular solves
 │   │   └── abmc_ordering.hpp   # ABMC ordering for parallel triangular solves
-│   ├── preconditioners/        # IC, SGS implementations
+│   ├── preconditioners/        # IC, SGS, BDDC implementations
 │   ├── solvers/                # CG, SGS-MRTR implementations
 │   └── ngsolve/                # NGSolve BaseMatrix wrappers + pybind11 export
 ├── ngsolve/
-│   ├── python_module.cpp       # Standalone pybind11 module entry point
-│   └── README.md               # Integration reference
-├── tests/                      # Test suite
-│   └── test_sparsesolv.py      # NGSolve pytest
+│   └── python_module.cpp       # Standalone pybind11 module entry point
+├── tests/
+│   ├── test_sparsesolv.py      # Core solver/preconditioner tests
+│   └── test_bddc.py            # BDDC preconditioner tests
 ├── CMakeLists.txt              # Header-only library + NGSolve module build
 └── LICENSE
 ```

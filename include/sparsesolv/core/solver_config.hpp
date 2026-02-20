@@ -145,6 +145,19 @@ struct SolverConfig {
     /// The actual number may be increased if the graph requires it.
     int abmc_num_colors = 4;
 
+    /// When true, CG runs entirely in ABMC-reordered space (SpMV uses
+    /// reordered matrix). When false (default), CG uses the original
+    /// matrix for SpMV and only the preconditioner operates in
+    /// reordered space. False is usually faster because it preserves
+    /// the FEM mesh ordering cache locality for SpMV.
+    bool abmc_reorder_spmv = false;
+
+    /// Enable RCM (Reverse Cuthill-McKee) preprocessing before ABMC.
+    /// RCM reduces bandwidth, improving cache locality for both SpMV
+    /// and triangular solves. ABMC then operates on the bandwidth-reduced
+    /// matrix.
+    bool abmc_use_rcm = false;
+
     //--------------------------------------------------
     // Builder pattern for convenient configuration
     //--------------------------------------------------
@@ -195,6 +208,16 @@ struct SolverConfig {
         use_abmc = enable;
         abmc_block_size = block_size;
         abmc_num_colors = num_colors;
+        return *this;
+    }
+
+    SolverConfig& with_abmc_reorder_spmv(bool enable = true) {
+        abmc_reorder_spmv = enable;
+        return *this;
+    }
+
+    SolverConfig& with_abmc_rcm(bool enable = true) {
+        abmc_use_rcm = enable;
         return *this;
     }
 };

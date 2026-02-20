@@ -1,46 +1,5 @@
-/**
- * @file sparsesolv.hpp
- * @brief Main header file for SparseSolv library
- *
- * SparseSolv provides iterative solvers for sparse linear systems,
- * designed for integration with finite element codes.
- *
- * Features:
- * - Preconditioned Conjugate Gradient (ICCG)
- * - SGS-MRTR (Symmetric Gauss-Seidel MRTR with split formula)
- * - Support for real and complex matrices
- *
- * Example usage:
- * @code
- * #include <sparsesolv/sparsesolv.hpp>
- *
- * // Create sparse matrix view (zero-copy wrapper around your CSR data)
- * sparsesolv::SparseMatrixView<double> A(n, n, row_ptr, col_idx, values);
- *
- * // Configure solver
- * sparsesolv::SolverConfig config;
- * config.tolerance = 1e-10;
- * config.max_iterations = 1000;
- *
- * // Create preconditioner
- * sparsesolv::ICPreconditioner<double> precond(1.05);
- * precond.setup(A);
- *
- * // Create solver and solve
- * sparsesolv::CGSolver<double> solver;
- * solver.set_config(config);
- *
- * std::vector<double> x(n, 0.0);
- * auto result = solver.solve(A, b, x, &precond);
- *
- * if (result.converged) {
- *     std::cout << "Converged in " << result.iterations << " iterations\n";
- * }
- * @endcode
- *
- * @author SparseSolv Contributors
- * @version 2.0.0
- */
+/// @file sparsesolv.hpp
+/// @brief Main header — includes all SparseSolv components
 
 #ifndef SPARSESOLV_HPP
 #define SPARSESOLV_HPP
@@ -56,6 +15,7 @@
 // Preconditioners
 #include "preconditioners/ic_preconditioner.hpp"
 #include "preconditioners/sgs_preconditioner.hpp"
+#include "preconditioners/bddc_preconditioner.hpp"
 
 // Solvers
 #include "solvers/iterative_solver.hpp"
@@ -64,9 +24,6 @@
 
 namespace sparsesolv {
 
-/**
- * @brief Library version information
- */
 struct Version {
     static constexpr int major = 2;
     static constexpr int minor = 0;
@@ -79,16 +36,7 @@ struct Version {
     }
 };
 
-/**
- * @brief Convenience function: Solve Ax=b using ICCG
- *
- * @param A System matrix (CSR format view)
- * @param b Right-hand side vector
- * @param x Solution vector (initial guess, modified in place)
- * @param size System size
- * @param config Solver configuration
- * @return SolverResult with convergence information
- */
+/// Convenience function: Solve Ax=b using ICCG
 template<typename Scalar = double>
 inline SolverResult solve_iccg(
     const SparseMatrixView<Scalar>& A,
@@ -107,43 +55,53 @@ inline SolverResult solve_iccg(
     solver.set_config(config);
 
     if (precond.has_reordered_matrix()) {
-        // ABMC path: run CG entirely in reordered space
-        // Permutation is done once before and after CG (not per iteration)
+        // Path 1: ABMC with abmc_reorder_spmv=true
+        // CG runs entirely in ABMC-reordered space (legacy behavior)
         const auto& ord = precond.abmc_ordering();
 
-        // Permute b: b_reord[ord[i]] = b[i]
         std::vector<Scalar> b_reord(size);
-        for (index_t i = 0; i < size; ++i) {
-            b_reord[ord[i]] = b[i];
-        }
+        for (index_t i = 0; i < size; ++i) b_reord[ord[i]] = b[i];
 
-        // Permute x (initial guess): x_reord[ord[i]] = x[i]
         std::vector<Scalar> x_reord(size);
-        for (index_t i = 0; i < size; ++i) {
-            x_reord[ord[i]] = x[i];
-        }
+        for (index_t i = 0; i < size; ++i) x_reord[ord[i]] = x[i];
 
-        // CG with reordered matrix and no-permutation preconditioner adapter
         auto A_reord = precond.reordered_matrix_view();
         ICPrecondReorderedAdapter<Scalar> adapter(precond);
         auto result = solver.solve(A_reord, b_reord.data(), x_reord.data(),
                                    size, &adapter);
 
-        // Reverse permute solution: x[i] = x_reord[ord[i]]
-        for (index_t i = 0; i < size; ++i) {
-            x[i] = x_reord[ord[i]];
-        }
-
+        for (index_t i = 0; i < size; ++i) x[i] = x_reord[ord[i]];
         return result;
     }
 
-    // Standard path (level scheduling or no preconditioning)
+    if (precond.has_rcm_matrix()) {
+        // Path 2: RCM+ABMC split mode
+        // SpMV uses RCM-reordered matrix (better cache locality than original)
+        // Preconditioner handles RCM->ABMC permutation internally
+        const auto& rcm_ord = precond.rcm_perm();
+
+        std::vector<Scalar> b_rcm(size);
+        for (index_t i = 0; i < size; ++i) b_rcm[rcm_ord[i]] = b[i];
+
+        std::vector<Scalar> x_rcm(size);
+        for (index_t i = 0; i < size; ++i) x_rcm[rcm_ord[i]] = x[i];
+
+        auto A_rcm = precond.rcm_matrix_view();
+        ICPrecondRCMABMCAdapter<Scalar> rcm_adapter(precond);
+        auto result = solver.solve(A_rcm, b_rcm.data(), x_rcm.data(),
+                                   size, &rcm_adapter);
+
+        for (index_t i = 0; i < size; ++i) x[i] = x_rcm[rcm_ord[i]];
+        return result;
+    }
+
+    // Path 3: Standard (default)
+    // SpMV uses original matrix A (preserves FEM mesh cache locality)
+    // ABMC permutation handled internally by preconditioner::apply_abmc()
     return solver.solve(A, b, x, size, &precond);
 }
 
-/**
- * @brief Convenience function: Solve Ax=b using ICCG with std::vector
- */
+/// Convenience function: Solve Ax=b using ICCG with std::vector
 template<typename Scalar = double>
 inline SolverResult solve_iccg(
     const SparseMatrixView<Scalar>& A,
@@ -157,11 +115,7 @@ inline SolverResult solve_iccg(
     return solve_iccg(A, b.data(), x.data(), static_cast<index_t>(b.size()), config);
 }
 
-/**
- * @brief Convenience function: Solve Ax=b using SGS-MRTR
- *
- * Uses the specialized SGS-MRTR solver with split preconditioner formula.
- */
+/// Convenience function: Solve Ax=b using SGS-MRTR
 template<typename Scalar = double>
 inline SolverResult solve_sgsmrtr(
     const SparseMatrixView<Scalar>& A,
@@ -178,9 +132,7 @@ inline SolverResult solve_sgsmrtr(
     return solver.solve(A, b, x, size);
 }
 
-/**
- * @brief Convenience function: Solve Ax=b using SGS-MRTR with std::vector
- */
+/// Convenience function: Solve Ax=b using SGS-MRTR with std::vector
 template<typename Scalar = double>
 inline SolverResult solve_sgsmrtr(
     const SparseMatrixView<Scalar>& A,
