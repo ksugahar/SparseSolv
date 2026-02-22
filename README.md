@@ -2,140 +2,139 @@
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
-Header-only C++17 iterative solver library for [NGSolve](https://ngsolve.org/) finite element applications.
-Two complementary approaches for large-scale sparse linear systems:
+[NGSolve](https://ngsolve.org/) 有限要素解析向けのヘッダオンリー C++17 反復法ソルバーライブラリ。
+大規模疎行列連立方程式に対して、2つの相補的なアプローチを提供する:
 
-- **BDDC preconditioner** — Element-by-element domain decomposition with wirebasket coarse space. Produces mesh-independent iteration counts. Implementation matches NGSolve's built-in BDDC and serves as a reference for developers building their own BDDC.
-- **ICCG with ABMC multicolor ordering** — Incomplete Cholesky CG with parallel triangular solves via Algebraic Block Multi-Color ordering. Lower setup cost than BDDC; effective for well-conditioned problems.
+- **BDDC前処理** — 要素単位の領域分割とwirebasket粗空間による前処理。メッシュ非依存の反復回数を実現。NGSolve組込みBDDCと同一のアルゴリズムを実装しており、開発者が独自のBDDCを構築する際のリファレンスとなる。
+- **ABMC並列化ICCG** — 代数的ブロックマルチカラー (ABMC) 順序付けによる並列三角解法付きの不完全コレスキー分解CG。BDDCよりセットアップコストが低く、適度な規模の問題に有効。
 
-Both support `double` and `std::complex<double>`, and are provided as a standalone pybind11 extension module (`sparsesolv_ngsolve`), separate from NGSolve's source tree.
+`double` と `std::complex<double>` の両方をサポートし、NGSolveのソースツリーとは独立したpybind11拡張モジュール (`sparsesolv_ngsolve`) として提供する。
 
-Fork of [JP-MARs/SparseSolv](https://github.com/JP-MARs/SparseSolv).
+[JP-MARs/SparseSolv](https://github.com/JP-MARs/SparseSolv) のfork。
 
-## Why SparseSolv?
+## なぜSparseSolvか？
 
-NGSolve ships with direct solvers and built-in BDDC. SparseSolv adds three things that NGSolve does not provide out of the box:
+NGSolveには直接法ソルバーと組込みBDDCが搭載されている。SparseSolvはNGSolveが標準では提供しない3つの機能を追加する:
 
-1. **Transparent, standalone BDDC implementation** — NGSolve's built-in BDDC is production code embedded deep in the framework. SparseSolv reimplements the same algorithm as a readable, self-contained C++ header-only library. Iteration counts [match NGSolve's BDDC exactly](docs/03_sparsesolv_vs_ngsolve_bddc.ipynb) on the same problems, making it a reference for developers who want to study, modify, or extend BDDC.
+1. **透過的で独立したBDDC実装** — NGSolveの組込みBDDCはフレームワーク内部に深く埋め込まれたプロダクションコードである。SparseSolvは同一のアルゴリズムを、読みやすく自己完結したC++ヘッダオンリーライブラリとして再実装した。同一問題での反復回数は[NGSolveのBDDCと完全に一致](docs/03_sparsesolv_vs_ngsolve_bddc.ipynb)し、BDDCを学習・改良・拡張したい開発者のリファレンスとなる。
 
-2. **Robustness for electromagnetic (HCurl) problems** — Curl-curl FEM matrices are semi-definite, which causes standard IC factorization to break down. SparseSolv's auto-shift IC detects breakdown and adjusts automatically. More importantly, BDDC converges regardless of whether the source term is discretely divergence-free — a condition that [ICCG strictly requires but is not always easy to guarantee](docs/02_performance_comparison.ipynb).
+2. **電磁界 (HCurl) 問題への堅牢性** — curl-curl FEM行列は半正定値であり、標準のIC分解は破綻する。SparseSolvのauto-shift ICは破綻を検出し自動調整する。さらにBDDCは、ソース項が離散的にdiv-freeであるかどうかに関わらず収束する — [ICCGでは必須だが実際には保証しにくい条件](docs/02_performance_comparison.ipynb)を不要にする。
 
-3. **Parallel ICCG via ABMC multicolor ordering** — The triangular solve in IC preconditioning is inherently sequential. ABMC (Algebraic Block Multi-Color) ordering breaks this bottleneck, enabling parallel forward/backward substitution. This makes ICCG competitive for moderate problems where BDDC setup cost is not justified.
+3. **ABMCマルチカラー順序付けによる並列ICCG** — IC前処理の三角解法は本質的に逐次的である。ABMC順序付けがこのボトルネックを解消し、並列前進・後退代入を実現する。BDDCのセットアップコストが割に合わない中規模問題でICCGを競争力のあるものにする。
 
-## When to Use What
+## ソルバー選択ガイド
 
-| Problem | FE Space | Recommended | Why |
-|---------|----------|-------------|-----|
-| Poisson (high order) | H1 (order >= 3) | **BDDC+CG** | 2 iterations, mesh-independent |
-| Poisson (low order) | H1 (order 1-2) | **ICCG** | BDDC setup cost not justified |
-| Elasticity | VectorH1 | **BDDC+CG** | ICCG iteration count grows with refinement |
-| Curl-curl (real) | HCurl (`nograds=True`) | **BDDC+CG** or **Shifted-ICCG** | BDDC robust to source formulation |
-| Eddy current (complex) | HCurl (complex) | **BDDC+CG** (`conjugate=False`) | Complex-symmetric support |
-| Small problems (< 1K DOFs) | any | Direct solver | Iterative solver overhead not justified |
+| 問題 | 有限要素空間 | 推奨手法 | 理由 |
+|------|------------|---------|------|
+| Poisson (高次) | H1 (order ≥ 3) | **BDDC+CG** | 2反復、メッシュ非依存 |
+| Poisson (低次) | H1 (order 1-2) | **ICCG** | BDDCのセットアップコスト不要 |
+| 弾性体 | VectorH1 | **BDDC+CG** | ICCGは細分化で反復数増加 |
+| Curl-curl (実数) | HCurl (`nograds=True`) | **BDDC+CG** or **Shifted-ICCG** | BDDCはソース構成に非依存 |
+| 渦電流 (複素数) | HCurl (complex) | **BDDC+CG** (`conjugate=False`) | 複素対称行列対応 |
+| 小規模 (< 1K DOFs) | 任意 | 直接法 | 反復法のオーバーヘッド大 |
 
-See [tutorials](docs/tutorials.md) for complete examples with timing comparisons.
+チュートリアルと計算時間の比較は [tutorials](docs/tutorials.md) を参照。
 
-## Performance
+## 性能
 
-Benchmarks on 3D HCurl curl-curl problems (8 threads, `nograds=True`).
-Full details in [02_performance_comparison.ipynb](docs/02_performance_comparison.ipynb).
+3D HCurl curl-curl問題でのベンチマーク (8スレッド, `nograds=True`)。
+詳細は [02_performance_comparison.ipynb](docs/02_performance_comparison.ipynb)。
 
-**Toroidal coil** (148K DOFs, order 2 — well-posed div-free source):
+**トロイダルコイル** (148K DOFs, order 2 — div-freeソース):
 
-| Solver | Iterations | Wall Time | vs ICCG |
-|--------|-----------|-----------|---------|
+| ソルバー | 反復数 | 計算時間 | vs ICCG |
+|---------|--------|---------|---------|
 | ICCG | 513 | 13.1 s | 1.0x |
-| ICCG + ABMC (8 colors) | 444 | 7.4 s | **1.8x** |
+| ICCG + ABMC (8色) | 444 | 7.4 s | **1.8x** |
 | BDDC | 47 | 4.2 s | **3.1x** |
 
-ABMC parallelizes the triangular solve bottleneck, cutting ICCG wall time nearly in half.
-BDDC goes further with mesh-independent convergence.
+ABMCは三角解法のボトルネックを並列化し、ICCG計算時間をほぼ半減。
+BDDCはメッシュ非依存の収束でさらに高速。
 
-**Helical coil** (565K DOFs, order 2 — source formulation robustness):
+**ヘリカルコイル** (565K DOFs, order 2 — ソース構成の堅牢性):
 
-| Source Formulation | ICCG | BDDC |
-|---|---|---|
-| Potential-based `J*v*dx` (not div-free) | 1000 iters, **diverged** | 33 iters, converged |
-| Curl-based `T*curl(v)*dx` (div-free) | 161 iters, converged | 53 iters, converged |
+| ソース構成 | ICCG | BDDC |
+|-----------|------|------|
+| ポテンシャルベース `J*v*dx` (非div-free) | 1000反復, **不収束** | 33反復, 収束 |
+| curl-based `T*curl(v)*dx` (div-free) | 161反復, 収束 | 53反復, 収束 |
 
-ICCG requires the source to be discretely divergence-free — a constraint that is not always easy
-to satisfy in practice. BDDC converges regardless of source formulation.
+ICCGはソースが離散的にdiv-freeであることを要求する — 実際には保証しにくい条件。
+BDDCはソース構成に関わらず収束する。
 
-## Documentation
+## ドキュメント
 
-See [docs/](docs/) for detailed documentation (in Japanese):
-- [Architecture](docs/architecture.md) — Source code structure and design
-- [Algorithms](docs/algorithms.md) — Algorithm descriptions (BDDC, IC, SGS-MRTR, CG, ABMC)
-- [BDDC Implementation Guide](docs/bddc_implementation_details.md) — Theory, pseudo-code, API, benchmarks
-- [ABMC Implementation Guide](docs/abmc_implementation_details.md) — Parallel triangular solves, performance analysis
-- [API Reference](docs/api_reference.md) — Python API reference
-- [Tutorials](docs/tutorials.md) — Practical examples with all solver types
-- [Development](docs/development.md) — Build, test, and development notes
+[docs/](docs/) に詳細ドキュメント (日本語) を整備:
+- [アーキテクチャ](docs/architecture.md) — ソースコード構成と設計
+- [アルゴリズム](docs/algorithms.md) — アルゴリズム解説 (BDDC, IC, SGS-MRTR, CG, ABMC)
+- [BDDC実装ガイド](docs/bddc_implementation_details.md) — 理論、疑似コード、API、ベンチマーク
+- [ABMC実装ガイド](docs/abmc_implementation_details.md) — 並列三角解法、性能解析
+- [APIリファレンス](docs/api_reference.md) — Python APIリファレンス
+- [チュートリアル](docs/tutorials.md) — 実践例 (全ソルバー比較)
+- [開発者向け情報](docs/development.md) — ビルド、テスト、開発ノート
 
-### Benchmark Notebooks
+### ベンチマーク・ノートブック
 
-| Notebook | Content |
-|----------|---------|
-| [01_shift_parameter.ipynb](docs/01_shift_parameter.ipynb) | IC shift parameter for semi-definite HCurl systems |
-| [02_performance_comparison.ipynb](docs/02_performance_comparison.ipynb) | BDDC vs ICCG vs ICCG+ABMC performance |
-| [03_sparsesolv_vs_ngsolve_bddc.ipynb](docs/03_sparsesolv_vs_ngsolve_bddc.ipynb) | SparseSolv BDDC = NGSolve BDDC equivalence |
+| ノートブック | 内容 |
+|------------|------|
+| [01_shift_parameter.ipynb](docs/01_shift_parameter.ipynb) | 半正定値HCurlでのICシフトパラメータ |
+| [02_performance_comparison.ipynb](docs/02_performance_comparison.ipynb) | BDDC vs ICCG vs ICCG+ABMC 性能比較 |
+| [03_sparsesolv_vs_ngsolve_bddc.ipynb](docs/03_sparsesolv_vs_ngsolve_bddc.ipynb) | SparseSolv BDDC = NGSolve BDDC 同等性 |
 
-## Features
+## 機能
 
-### Preconditioners
-- **BDDC** (Balancing Domain Decomposition by Constraints) — element-by-element construction, wirebasket coarse space, mesh-independent iterations
-- **IC** (Incomplete Cholesky) — shifted IC(0) with auto-shift for semi-definite systems
-- **SGS** (Symmetric Gauss-Seidel) — no factorization required
+### 前処理
+- **BDDC** (Balancing Domain Decomposition by Constraints) — 要素単位構築、wirebasket粗空間、メッシュ非依存反復
+- **IC** (不完全コレスキー) — shifted IC(0)、半正定値行列向けauto-shift
+- **SGS** (対称ガウス・ザイデル) — 分解不要
 
-### Iterative Solvers
-- **CG** (Conjugate Gradient) — for SPD systems, supports complex-symmetric (`conjugate=False`)
-- **SGS-MRTR** — MRTR with built-in SGS using split formula
+### 反復法ソルバー
+- **CG** (共役勾配法) — SPD系、複素対称 (`conjugate=False`) 対応
+- **SGS-MRTR** — split formula内蔵のMRTR
 
-### Combined Methods
-- **ICCG** — CG + IC preconditioner (with optional ABMC parallel triangular solves)
-- **SGSMRTR** — SGS-MRTR (self-contained)
+### 統合手法
+- **ICCG** — CG + IC前処理 (オプションでABMC並列三角解法)
+- **SGSMRTR** — SGS-MRTR (自己完結型)
 
-### Advanced Features
-- Auto-shift IC decomposition for semi-definite matrices (curl-curl problems)
-- Diagonal scaling for improved conditioning
-- ABMC (Algebraic Block Multi-Color) ordering for parallel triangular solves
-- Numerical breakdown detection with convergence-aware recovery
-- Best-result tracking (returns best iterate if solver doesn't converge)
-- Residual history recording
+### 高度な機能
+- 半正定値行列 (curl-curl問題) 向けauto-shift IC分解
+- 対角スケーリングによる条件数改善
+- ABMC (代数的ブロックマルチカラー) 順序付けによる並列三角解法
+- 数値的破綻検出と収束認識型回復
+- best-result追跡 (未収束時は最良反復解を返却)
+- 残差履歴記録
 
-### Parallelism
+### 並列化
 
-All parallel operations are abstracted via `core/parallel.hpp` with compile-time dispatch:
+全並列処理は `core/parallel.hpp` によりコンパイル時にディスパッチ:
 
-| Build Configuration | Backend | Use Case |
-|---|---|---|
-| `SPARSESOLV_USE_NGSOLVE_TASKMANAGER` | NGSolve TaskManager (`ngcore::ParallelFor/ParallelReduce`) | NGSolve integration |
-| `_OPENMP` | OpenMP `#pragma omp parallel for` | Standalone with OpenMP |
-| (neither) | Serial loops | Standalone without threading |
+| ビルド設定 | バックエンド | 用途 |
+|-----------|------------|------|
+| `SPARSESOLV_USE_NGSOLVE_TASKMANAGER` | NGSolve TaskManager (`ngcore::ParallelFor/ParallelReduce`) | NGSolve統合 |
+| `_OPENMP` | OpenMP `#pragma omp parallel for` | スタンドアロン+OpenMP |
+| (どちらもなし) | シリアル実行 | スタンドアロン (スレッドなし) |
 
-## Installation
+## インストール
 
-### From Pre-built Wheel (Recommended)
+### ビルド済みWheel (推奨)
 
-Download the `.whl` file for your platform from the
-[Releases](https://github.com/ksugahar/ngsolve-sparsesolv/releases) page, then install:
+[Releases](https://github.com/ksugahar/ngsolve-sparsesolv/releases) ページからプラットフォーム対応の `.whl` ファイルをダウンロードしてインストール:
 
 ```bash
 pip install sparsesolv_ngsolve-2.1.0-cp312-cp312-win_amd64.whl
 ```
 
-Replace the filename with the one matching your Python version and OS.
+ファイル名はPythonバージョンとOSに合わせて適宜変更。
 
-### From Source
+### ソースからビルド
 
-Requires [Git for Windows](https://gitforwindows.org/) (or equivalent), CMake 3.16+,
-a C++17 compiler, and NGSolve (`pip install ngsolve` or built from source).
+[Git for Windows](https://gitforwindows.org/) (または同等品)、CMake 3.16+、
+C++17コンパイラ、NGSolve (`pip install ngsolve` またはソースビルド) が必要。
 
 ```bash
 pip install git+https://github.com/ksugahar/ngsolve-sparsesolv.git
 ```
 
-Or clone and build locally:
+またはクローンしてローカルビルド:
 
 ```bash
 git clone https://github.com/ksugahar/ngsolve-sparsesolv.git
@@ -143,17 +142,17 @@ cd ngsolve-sparsesolv
 pip install .
 ```
 
-For development builds (editable install, manual CMake), see [docs/development.md](docs/development.md).
+開発ビルド (editable install, 手動CMake) は [docs/development.md](docs/development.md) を参照。
 
-### Verify
+### 動作確認
 
 ```bash
 python -c "from sparsesolv_ngsolve import SparseSolvSolver; print('OK')"
 ```
 
-## NGSolve Usage
+## NGSolveでの使い方
 
-### Quick Start (ICCG)
+### クイックスタート (ICCG)
 
 ```python
 from ngsolve import *
@@ -177,22 +176,22 @@ solver = SparseSolvSolver(a.mat, method="ICCG",
 gfu.vec.data = solver * f.vec
 ```
 
-### BDDC Preconditioner
+### BDDC前処理
 
 ```python
 from sparsesolv_ngsolve import BDDCPreconditioner
 from ngsolve.krylovspace import CGSolver
 
-# BDDC takes BilinearForm + FESpace (not just the matrix)
+# BDDCはBilinearForm + FESpaceを受け取る (行列だけではない)
 pre = BDDCPreconditioner(a, fes, coarse_inverse="sparsecholesky")
 inv = CGSolver(a.mat, pre, tol=1e-10)
 gfu.vec.data = inv * f.vec
 ```
 
-### ICCG with ABMC Parallel Ordering
+### ABMC並列化ICCG
 
 ```python
-# ABMC enables parallel triangular solves in IC preconditioner
+# ABMCでIC前処理の三角解法を並列化
 solver = SparseSolvSolver(a.mat, method="ICCG",
                           freedofs=fes.FreeDofs(), tol=1e-10,
                           use_abmc=True,
@@ -201,26 +200,24 @@ solver = SparseSolvSolver(a.mat, method="ICCG",
 gfu.vec.data = solver * f.vec
 ```
 
-The ABMC algorithm groups nearby rows into blocks (BFS aggregation), then colors the
-block adjacency graph so that blocks with the same color have no lower-triangular
-dependencies. During the triangular solve, colors are processed sequentially while
-blocks within each color run in parallel.
-On a 148K DOF HCurl problem with 8 threads, ABMC reduces ICCG wall time from 13.1s
-to 7.4s (1.8x speedup) by parallelizing the triangular solve bottleneck.
+ABMCアルゴリズムは近傍の行をブロックに集約 (BFS集約) した後、
+ブロック隣接グラフを彩色して同色ブロック間の下三角依存関係を排除する。
+三角解法では色を逐次処理し、各色内のブロックを並列に実行する。
+148K DOF HCurl問題 (8スレッド) で、ABMCはICCG計算時間を13.1秒から7.4秒に短縮 (1.8倍高速化)。
 
-### Preconditioners with NGSolve's CGSolver
+### 前処理 + NGSolve CGSolver
 
 ```python
 from sparsesolv_ngsolve import ICPreconditioner, SGSPreconditioner
 from ngsolve.krylovspace import CGSolver
 
-# IC preconditioner + NGSolve CG
+# IC前処理 + NGSolve CG
 pre = ICPreconditioner(a.mat, freedofs=fes.FreeDofs(), shift=1.05)
 inv = CGSolver(a.mat, pre, tol=1e-10, maxiter=2000)
 gfu.vec.data = inv * f.vec
 ```
 
-### 3D Curl-Curl (Semi-Definite System)
+### 3D curl-curl (半正定値系)
 
 ```python
 from netgen.occ import Box, Pnt
@@ -241,7 +238,7 @@ f = LinearForm(fes)
 f += CF((0,0,1))*v*dx
 f.Assemble()
 
-# Auto-shift IC handles semi-definite curl-curl matrix
+# auto-shift ICで半正定値curl-curl行列に対応
 solver = SparseSolvSolver(a.mat, method="ICCG",
                           freedofs=fes.FreeDofs(),
                           tol=1e-8, maxiter=2000, shift=1.0)
@@ -252,138 +249,162 @@ gfu = GridFunction(fes)
 gfu.vec.data = solver * f.vec
 ```
 
-### Complex-Symmetric vs Hermitian Systems
+### 複素対称系 vs エルミート系
 
-SparseSolv supports both complex-symmetric and Hermitian systems via the
-`conjugate` parameter:
+SparseSolvは複素対称系とエルミート系の両方を `conjugate` パラメータで切り替える:
 
 ```python
-# Complex-symmetric (A^T = A): e.g., eddy current (curl-curl + i*sigma*mass)
-# Default: conjugate=False (unconjugated inner product a^T * b)
+# 複素対称 (A^T = A): 渦電流 (curl-curl + iσ mass) など
+# デフォルト: conjugate=False (非共役内積 a^T * b)
 solver = SparseSolvSolver(a.mat, method="ICCG",
                           freedofs=fes.FreeDofs(), tol=1e-8)
 
-# Hermitian (A^H = A): e.g., real-coefficient problem in complex FE space
-# Set conjugate=True (conjugated inner product a^H * b)
+# エルミート (A^H = A): 実係数問題を複素FE空間で解く場合など
+# conjugate=True (共役内積 a^H * b)
 solver = SparseSolvSolver(a.mat, method="ICCG",
                           freedofs=fes.FreeDofs(), tol=1e-8,
                           conjugate=True)
 ```
 
-This corresponds to NGSolve's `CGSolver(conjugate=True/False)`.
+NGSolveの `CGSolver(conjugate=True/False)` に対応。
 
-### SparseSolvSolver Parameters
+### SparseSolvSolver パラメータ
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `method` | str | `"ICCG"` | Solver method: `ICCG`, `SGSMRTR`, `CG` |
-| `tol` | float | `1e-10` | Convergence tolerance |
-| `maxiter` | int | `1000` | Maximum iterations |
-| `shift` | float | `1.05` | IC shift parameter (stability) |
-| `auto_shift` | bool | `False` | Auto-increase shift on IC breakdown |
-| `diagonal_scaling` | bool | `False` | Scale matrix by diagonal |
-| `save_best_result` | bool | `True` | Track and restore best iterate |
-| `save_residual_history` | bool | `False` | Record residual per iteration |
-| `conjugate` | bool | `False` | Conjugated inner product for Hermitian systems |
-| `divergence_check` | bool | `False` | Early termination on stagnation |
-| `printrates` | bool | `False` | Print convergence info to stdout |
-| `use_abmc` | bool | `False` | Enable ABMC ordering for parallel triangular solves |
-| `abmc_block_size` | int | `4` | Rows per block in ABMC aggregation |
-| `abmc_num_colors` | int | `4` | Target number of colors for ABMC coloring |
+| パラメータ | 型 | 既定値 | 説明 |
+|-----------|------|--------|------|
+| `method` | str | `"ICCG"` | ソルバー手法: `ICCG`, `SGSMRTR`, `CG` |
+| `tol` | float | `1e-10` | 収束許容値 |
+| `maxiter` | int | `1000` | 最大反復回数 |
+| `shift` | float | `1.05` | ICシフトパラメータ (安定性) |
+| `auto_shift` | bool | `False` | IC破綻時のシフト自動増加 |
+| `diagonal_scaling` | bool | `False` | 対角スケーリング |
+| `save_best_result` | bool | `True` | 最良反復解の追跡・復元 |
+| `save_residual_history` | bool | `False` | 各反復の残差を記録 |
+| `conjugate` | bool | `False` | エルミート系用の共役内積 |
+| `divergence_check` | bool | `False` | 停滞時の早期終了 |
+| `printrates` | bool | `False` | 収束情報のstdout出力 |
+| `use_abmc` | bool | `False` | ABMC順序付けによる並列三角解法 |
+| `abmc_block_size` | int | `4` | ABMCブロックあたりの行数 |
+| `abmc_num_colors` | int | `4` | ABMC目標色数 |
 
-### Available Python Classes
+### Pythonクラス一覧
 
 ```python
 from sparsesolv_ngsolve import (
-    # Factory functions (auto-dispatch real/complex based on mat.IsComplex())
+    # Factory関数 (mat.IsComplex()で実数/複素数を自動判定)
     BDDCPreconditioner,            # BDDC (BilinearForm + FESpace API)
-    ICPreconditioner,              # Use with NGSolve's CGSolver
-    SGSPreconditioner,             # Use with NGSolve's CGSolver
-    SparseSolvSolver,              # Standalone solver (ICCG, SGSMRTR)
+    ICPreconditioner,              # NGSolve CGSolverと併用
+    SGSPreconditioner,             # NGSolve CGSolverと併用
+    SparseSolvSolver,              # 統合ソルバー (ICCG, SGSMRTR)
 
-    SparseSolvResult,              # Solve result object
+    SparseSolvResult,              # ソルブ結果
 )
 ```
 
-Factory functions automatically dispatch to the correct type (`double` or `complex<double>`)
-based on the matrix type.
+Factory関数は行列の型に基づいて適切なテンプレート (`double` or `complex<double>`) に自動ディスパッチ。
 
-## Standalone Usage (C++)
+## スタンドアロン使用 (C++)
 
 ```cpp
 #include <sparsesolv/sparsesolv.hpp>
 
-// Create CSR matrix view (zero-copy)
+// CSR行列ビューを作成 (ゼロコピー)
 sparsesolv::SparseMatrixView<double> A(rows, cols, row_ptr, col_idx, values);
 
-// Solve with ICCG
+// ICCGで解く
 sparsesolv::SolverConfig config;
 config.tolerance = 1e-10;
 config.max_iterations = 1000;
 
 auto result = sparsesolv::solve_iccg(A, b, x, size, config);
 if (result.converged) {
-    // solution in x
+    // 解は x に格納
 }
 ```
 
-## Directory Structure
+## ディレクトリ構成
 
 ```
 ngsolve-sparsesolv/
-├── docs/                        # Documentation (Japanese)
-├── include/sparsesolv/         # Header-only library
-│   ├── sparsesolv.hpp          # Main header (convenience includes)
-│   ├── core/                   # Types, config, matrix view, preconditioner base
-│   │   ├── dense_matrix.hpp    # Small dense matrix with LU inverse (for BDDC)
-│   │   ├── sparse_matrix_coo.hpp # COO sparse matrix (assembly)
-│   │   ├── sparse_matrix_csr.hpp # CSR sparse matrix (storage)
-│   │   ├── parallel.hpp        # Parallelism abstraction (TaskManager/OpenMP/serial)
-│   │   ├── level_schedule.hpp  # Level scheduling for triangular solves
-│   │   └── abmc_ordering.hpp   # ABMC ordering for parallel triangular solves
-│   ├── preconditioners/        # IC, SGS, BDDC implementations
-│   ├── solvers/                # CG, SGS-MRTR implementations
-│   └── ngsolve/                # NGSolve BaseMatrix wrappers + pybind11 export
+├── docs/                        # ドキュメント (日本語)
+├── include/sparsesolv/         # ヘッダオンリーライブラリ
+│   ├── sparsesolv.hpp          # メインヘッダ (全コンポーネントをインクルード)
+│   ├── core/                   # 型、設定、行列ビュー、前処理基底
+│   │   ├── dense_matrix.hpp    # 小規模密行列 + LU逆行列 (BDDC用)
+│   │   ├── sparse_matrix_coo.hpp # COO疎行列 (組立用)
+│   │   ├── sparse_matrix_csr.hpp # CSR疎行列 (格納用)
+│   │   ├── parallel.hpp        # 並列化抽象レイヤ (TaskManager/OpenMP/serial)
+│   │   ├── level_schedule.hpp  # レベルスケジューリング (三角解法並列化)
+│   │   └── abmc_ordering.hpp   # ABMC順序付け (三角解法並列化)
+│   ├── preconditioners/        # IC, SGS, BDDC実装
+│   ├── solvers/                # CG, SGS-MRTR実装
+│   └── ngsolve/                # NGSolve BaseMatrixラッパー + pybind11エクスポート
 ├── ngsolve/
-│   └── python_module.cpp       # Standalone pybind11 module entry point
+│   └── python_module.cpp       # pybind11モジュールエントリポイント
 ├── tests/
-│   ├── test_sparsesolv.py      # Core solver/preconditioner tests
-│   └── test_bddc.py            # BDDC preconditioner tests
-├── CMakeLists.txt              # Header-only library + NGSolve module build
+│   ├── test_sparsesolv.py      # ソルバー・前処理テスト
+│   └── test_bddc.py            # BDDC前処理テスト
+├── CMakeLists.txt              # ヘッダオンリーライブラリ + NGSolveモジュールビルド
 └── LICENSE
 ```
 
-## References
+## 参考文献
 
-1. T. Iwashita, H. Nakashima, Y. Takahashi,
+1. C.R. Dohrmann,
+   "A preconditioner for substructuring based on constrained energy minimization",
+   *SIAM J. Sci. Comput.*, Vol. 25, No. 1, pp. 246–258, 2003.
+   — BDDC前処理の原論文。
+
+2. J. Mandel, C.R. Dohrmann, R. Tezaur,
+   "An algebraic theory for primal and dual substructuring methods by constraints",
+   *Appl. Numer. Math.*, Vol. 54, No. 2, pp. 167–193, 2005.
+   — BDDCの代数的理論。
+
+3. T. Iwashita, H. Nakashima, Y. Takahashi,
    "Algebraic Block Multi-Color Ordering Method for Parallel Multi-Threaded
    Sparse Triangular Solver in ICCG Method",
    *Proc. IEEE 26th International Parallel and Distributed Processing Symposium (IPDPS)*, 2012.
-   — ABMC ordering algorithm.
+   — ABMCオーダリングアルゴリズム。
 
-2. Y. Tsuburaya, T. Mifune, T. Iwashita, E. Takahashi,
+4. J.A. Meijerink, H.A. van der Vorst,
+   "An iterative solution method for linear systems of which the coefficient matrix
+   is a symmetric M-matrix",
+   *Math. Comp.*, Vol. 31, No. 137, pp. 148–162, 1977.
+   — 不完全コレスキー (IC) 分解。
+
+5. M.R. Hestenes, E. Stiefel,
+   "Methods of conjugate gradients for solving linear systems",
+   *J. Res. Nat. Bur. Standards*, Vol. 49, No. 6, pp. 409–436, 1952.
+   — 共役勾配 (CG) 法。
+
+6. E. Cuthill, J. McKee,
+   "Reducing the bandwidth of sparse symmetric matrices",
+   *Proc. 24th National Conference of the ACM*, pp. 157–172, 1969.
+   — Reverse Cuthill-McKee (RCM) 帯域縮小順序付け。
+
+7. 圓谷吉宏, 三船泰, 岩下武史, 高橋英治,
    "MRTR法に基づく前処理付き反復法の数値実験",
    *電気学会研究会資料*, SA-12-64, 2012.
-   — SGS-MRTR method: original domestic workshop paper.
+   — SGS-MRTR法: 国内研究会論文。
 
-3. Y. Tsuburaya, T. Mifune, T. Iwashita, E. Takahashi,
+8. Y. Tsuburaya, T. Mifune, T. Iwashita, E. Takahashi,
    "Minimum Residual-Like Methods for Solving Ax = b with Shift-and-Invert Enhanced
    Multi-Step MRTR",
    *IEEE Transactions on Magnetics*, Vol. 49, No. 5, pp. 1569–1572, 2013.
-   — SGS-MRTR solver.
+   — SGS-MRTRソルバー。
 
-4. Y. Tsuburaya,
+9. 圓谷吉宏,
    "大規模電磁界問題の有限要素解析のための反復法の開発",
    *博士論文*, 京都大学, 2016.
-   — Comprehensive reference on iterative solvers for large-scale electromagnetic FEM.
+   — 大規模電磁界FEMの反復法に関する包括的参考文献。
 
-5. S. Hiruma, JP-MARs/SparseSolv,
-   https://github.com/JP-MARs/SparseSolv
-   — Original implementation (MPL 2.0 license).
+10. 比留間伸吾, JP-MARs/SparseSolv,
+    https://github.com/JP-MARs/SparseSolv
+    — 原実装 (MPL 2.0ライセンス)。
 
-## License
+## ライセンス
 
-This project is licensed under the [Mozilla Public License 2.0](LICENSE).
+本プロジェクトは [Mozilla Public License 2.0](LICENSE) の下でライセンスされている。
 
-SparseSolv is provided as an independent module, separate from NGSolve.
-It is built as a standalone pybind11 extension module that links against an installed NGSolve.
+SparseSolvはNGSolveとは独立したモジュールとして提供される。
+インストール済みNGSolveに対してリンクするスタンドアロンpybind11拡張モジュールとしてビルドされる。

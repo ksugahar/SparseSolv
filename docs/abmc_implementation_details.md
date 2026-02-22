@@ -37,7 +37,7 @@ level[i] = max(level[j] for j in L[i,:] where j < i) + 1
 
 ### 1.4 ABMC: ブロック + マルチカラー
 
-ABMC (T. Iwashita et al., IPDPS 2012) は2レベルの階層を導入して、並列性とキャッシュ局所性を両立する:
+ABMC [Iwashita, Nakashima, Takahashi 2012] は2レベルの階層を導入して、並列性とキャッシュ局所性を両立する:
 
 1. **ブロッキング**: 近傍の行をブロックにまとめる → キャッシュ局所性を維持
 2. **カラーリング**: ブロック間の依存関係を彩色 → 少ない同期回数で並列化
@@ -546,3 +546,21 @@ RCM は帯域幅縮小によりABMC彩色の色数を減らす可能性がある
 **課題**: `color_graph()` の出力パラメータと `build_row_ordering()` のパラメータに未使用のものがあった。
 
 **対応**: `color_graph()` から不要な出力パラメータを削除。`build_row_ordering()` のシグネチャを簡素化。
+
+---
+
+## 参考文献
+
+1. T. Iwashita, H. Nakashima, Y. Takahashi,
+   "Algebraic Block Multi-Color Ordering Method for Parallel
+   Multi-Threaded Sparse Triangular Solver in ICCG Method",
+   *Proc. IEEE IPDPS*, 2012.
+
+2. E. Cuthill, J. McKee,
+   "Reducing the Bandwidth of Sparse Symmetric Matrices",
+   *Proc. 24th Nat. Conf. ACM*, pp. 157–172, 1969.
+
+3. J. A. Meijerink, H. A. van der Vorst,
+   "An Iterative Solution Method for Linear Systems of Which the
+   Coefficient Matrix is a Symmetric M-Matrix",
+   *Math. Comp.*, Vol. 31, No. 137, pp. 148–162, 1977.

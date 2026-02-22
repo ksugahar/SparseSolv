@@ -160,23 +160,46 @@ BDDCでは `fes->GetFreeDofs(true)` (coupling=true) を使用。
 
 ## 参考文献
 
-1. T. Iwashita, H. Nakashima, Y. Takahashi,
+1. C. R. Dohrmann,
+   "A Preconditioner for Substructuring Based on Constrained Energy Minimization",
+   *SIAM J. Sci. Comput.*, Vol. 25, No. 1, pp. 246–258, 2003.
+
+2. J. Mandel, C. R. Dohrmann, R. Tezaur,
+   "An Algebraic Theory for Primal and Dual Substructuring Methods
+   by Constraints",
+   *Appl. Numer. Math.*, Vol. 54, No. 2, pp. 167–193, 2005.
+
+3. J. A. Meijerink, H. A. van der Vorst,
+   "An Iterative Solution Method for Linear Systems of Which the
+   Coefficient Matrix is a Symmetric M-Matrix",
+   *Math. Comp.*, Vol. 31, No. 137, pp. 148–162, 1977.
+
+4. M. R. Hestenes, E. Stiefel,
+   "Methods of Conjugate Gradients for Solving Linear Systems",
+   *J. Research of the National Bureau of Standards*,
+   Vol. 49, No. 6, pp. 409–436, 1952.
+
+5. T. Iwashita, H. Nakashima, Y. Takahashi,
    "Algebraic Block Multi-Color Ordering Method for Parallel Multi-Threaded
    Sparse Triangular Solver in ICCG Method",
    *Proc. IEEE IPDPS*, 2012.
 
-2. Y. Tsuburaya, T. Mifune, T. Iwashita, E. Takahashi,
+6. E. Cuthill, J. McKee,
+   "Reducing the Bandwidth of Sparse Symmetric Matrices",
+   *Proc. 24th Nat. Conf. ACM*, pp. 157–172, 1969.
+
+7. Y. Tsuburaya, T. Mifune, T. Iwashita, E. Takahashi,
    "MRTR法に基づく前処理付き反復法の数値実験",
    *電気学会研究会資料*, SA-12-64, 2012.
 
-3. Y. Tsuburaya, T. Mifune, T. Iwashita, E. Takahashi,
+8. Y. Tsuburaya, T. Mifune, T. Iwashita, E. Takahashi,
    "Minimum Residual-Like Methods for Solving Ax = b with Shift-and-Invert
    Enhanced Multi-Step MRTR",
-   *IEEE Trans. Magnetics*, Vol. 49, No. 5, pp. 1569-1572, 2013.
+   *IEEE Trans. Magnetics*, Vol. 49, No. 5, pp. 1569–1572, 2013.
 
-4. Y. Tsuburaya,
+9. Y. Tsuburaya,
    "大規模電磁界問題の有限要素解析のための反復法の開発",
    博士論文, 京都大学, 2016.
 
-5. S. Hiruma, JP-MARs/SparseSolv,
-   https://github.com/JP-MARs/SparseSolv
+10. S. Hiruma, JP-MARs/SparseSolv,
+    https://github.com/JP-MARs/SparseSolv
