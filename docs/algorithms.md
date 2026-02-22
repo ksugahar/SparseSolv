@@ -340,10 +340,19 @@ ABMCは2段階で構成される:
 
 目標色数 `C` (既定: 4) は並列粒度を制御する。
 
+#### 彩色アルゴリズムの詳細
+
+彩色は2段階で行われる:
+
+1. **最小色数の決定**: `num_colors = max(target_colors, 1 + max_lower_triangular_degree)`
+2. **Forbidden-Color-Set 法**: 各ブロックの下三角隣接色を forbidden 配列にマークし、最小の未使用色を割り当て。全色が衝突した場合、新しい色を追加。
+
+`target_colors` は**下限**であり保証値ではない。実際の色数はブロックグラフの構造に依存する。
+
 #### 既知の制限
 
-- `target_colors` は**下限**であり、保証値ではない。ブロック間の下三角依存関係が多い場合、グリーディ彩色が自動的に色数を拡張する。複雑なメッシュ（例: ヘリカルコイル）では、指定した色数 (例: 8) を大幅に超える場合がある。
-- BFS によるブロック形成は行列グラフの局所性に依存する。帯域幅の大きい行列では、ブロック間依存関係が密になり、彩色数が増加しやすい。RCM (Reverse Cuthill-McKee) 等の事前帯域縮小による改善は将来の検討課題である。
+- 複雑なメッシュ（ヘリカルコイル等）では色数が `target_colors` を大幅に超える可能性がある
+- BFS ブロッキングは行列グラフの局所性に依存。帯域幅の大きい行列ではブロック間依存が密になり彩色数が増加
 
 ### 4.3 三角解法の並列実行
 
@@ -396,6 +405,28 @@ RCM (Reverse Cuthill-McKee) 帯域縮小順序付けをABMCの前に適用する
 | 標準 | 元の行列 | ABMC順序で三角解法 | `use_abmc=True` |
 | RCM+ABMC | RCM行列 | RCM→ABMCの合成順序 | `use_abmc=True, abmc_use_rcm=True` |
 | ABMC全空間 | ABMC行列 | 順序なし (直接) | `abmc_reorder_spmv=True` |
+
+### 4.6 性能特性
+
+ABMCの比較対象は**persistent parallel region付きレベルスケジューリング**である
+（逐次レベルスケジューリングではない）。
+
+3D HCurl curl-curl (order=2, 8スレッド) での実測:
+
+| DOFs | Level Sched. | ABMC (best) | Speedup |
+|------|-------------|-------------|---------|
+| 11K | 0.044s | 0.051s | 0.86x |
+| 27K | 0.158s | 0.154s | 1.02x |
+| 82K | 0.763s | 0.650s | 1.17x |
+| 186K | 2.505s | 1.962s | 1.28x |
+
+**損益分岐点: 約 25K〜30K DOFs** (8スレッド)。小規模問題ではABMCの
+セットアップコストとベクトル置換オーバーヘッドが三角解法の高速化を上回る。
+
+問題構造にも依存し、トロイダルコイル (148K DOFs, 帯域幅大) では1.8xの高速化を
+達成している ([02_performance_comparison.ipynb](02_performance_comparison.ipynb))。
+
+詳細は [abmc_implementation_details.md](abmc_implementation_details.md) のセクション7を参照。
 
 ---
 

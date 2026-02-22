@@ -139,11 +139,16 @@ public:
         // Compute transpose L^T
         compute_transpose();
 
+        // Pre-allocate work vectors (avoid per-call heap allocation)
+        work_temp_.resize(n);
+        if (config_.diagonal_scaling) {
+            work_temp2_.resize(n);
+        }
+
         if (config_.use_abmc) {
-            // Pre-allocate work vectors for ABMC apply
+            // Pre-allocate ABMC-specific work vectors
             abmc_x_perm_.resize(n);
             abmc_y_perm_.resize(n);
-            abmc_temp_.resize(n);
 
             // Pre-compute composite permutations to avoid multi-level indirection
             build_composite_permutations(n);
@@ -262,14 +267,14 @@ public:
             parallel_for(size, [&](index_t i) {
                 abmc_x_perm_[i] = x[i] * static_cast<Scalar>(scaling_[i]);
             });
-            forward_substitution_abmc(abmc_x_perm_.data(), abmc_temp_.data());
-            backward_substitution_abmc(abmc_temp_.data(), abmc_x_perm_.data());
+            forward_substitution_abmc(abmc_x_perm_.data(), work_temp_.data());
+            backward_substitution_abmc(work_temp_.data(), abmc_x_perm_.data());
             parallel_for(size, [&](index_t i) {
                 y[i] = abmc_x_perm_[i] * static_cast<Scalar>(scaling_[i]);
             });
         } else {
-            forward_substitution_abmc(x, abmc_temp_.data());
-            backward_substitution_abmc(abmc_temp_.data(), y);
+            forward_substitution_abmc(x, work_temp_.data());
+            backward_substitution_abmc(work_temp_.data(), y);
         }
     }
 
@@ -288,8 +293,8 @@ public:
                 abmc_x_perm_[perm[i]] = x[i] *
                     static_cast<Scalar>(scaling_[perm[i]]);
             });
-            forward_substitution_abmc(abmc_x_perm_.data(), abmc_temp_.data());
-            backward_substitution_abmc(abmc_temp_.data(), abmc_y_perm_.data());
+            forward_substitution_abmc(abmc_x_perm_.data(), work_temp_.data());
+            backward_substitution_abmc(work_temp_.data(), abmc_y_perm_.data());
             parallel_for(size, [&](index_t i) {
                 y[i] = abmc_y_perm_[perm[i]] *
                     static_cast<Scalar>(scaling_[perm[i]]);
@@ -298,8 +303,8 @@ public:
             parallel_for(size, [&](index_t i) {
                 abmc_x_perm_[perm[i]] = x[i];
             });
-            forward_substitution_abmc(abmc_x_perm_.data(), abmc_temp_.data());
-            backward_substitution_abmc(abmc_temp_.data(), abmc_y_perm_.data());
+            forward_substitution_abmc(abmc_x_perm_.data(), work_temp_.data());
+            backward_substitution_abmc(work_temp_.data(), abmc_y_perm_.data());
             parallel_for(size, [&](index_t i) {
                 y[i] = abmc_y_perm_[perm[i]];
             });
@@ -327,12 +332,15 @@ private:
     LevelSchedule fwd_schedule_;     // For forward substitution (L)
     LevelSchedule bwd_schedule_;     // For backward substitution (L^T)
 
+    // Work vectors for apply (pre-allocated in setup, avoid per-call heap alloc)
+    mutable std::vector<Scalar> work_temp_;     // Intermediate result
+    mutable std::vector<Scalar> work_temp2_;    // Second intermediate (diagonal scaling)
+
     // ABMC ordering support
     ABMCSchedule abmc_schedule_;             // Block-color schedule
     SparseMatrixCSR<Scalar> reordered_csr_;  // Temporary: reordered full matrix
     mutable std::vector<Scalar> abmc_x_perm_;   // Work vector: permuted input
     mutable std::vector<Scalar> abmc_y_perm_;   // Work vector: permuted output
-    mutable std::vector<Scalar> abmc_temp_;     // Work vector: intermediate
 
     // RCM ordering support (Approach B)
     std::vector<index_t> rcm_ordering_;          // rcm_ordering_[old] = new
@@ -380,33 +388,34 @@ private:
 
     /**
      * @brief Apply with level scheduling (original path)
+     *
+     * Uses pre-allocated work_temp_ and work_temp2_ to avoid
+     * per-call heap allocation.
      */
     void apply_level_schedule(const Scalar* x, Scalar* y, index_t size) const {
-        std::vector<Scalar> temp(size);
         const bool use_persistent = get_num_threads() > 1;
 
         if (config_.diagonal_scaling && !scaling_.empty()) {
             for (index_t i = 0; i < size; ++i) {
-                temp[i] = x[i] * static_cast<Scalar>(scaling_[i]);
+                work_temp_[i] = x[i] * static_cast<Scalar>(scaling_[i]);
             }
-            std::vector<Scalar> temp2(size);
             if (use_persistent) {
-                forward_substitution_persistent(temp.data(), temp2.data());
-                backward_substitution_persistent(temp2.data(), temp.data());
+                forward_substitution_persistent(work_temp_.data(), work_temp2_.data());
+                backward_substitution_persistent(work_temp2_.data(), work_temp_.data());
             } else {
-                forward_substitution(temp.data(), temp2.data());
-                backward_substitution(temp2.data(), temp.data());
+                forward_substitution(work_temp_.data(), work_temp2_.data());
+                backward_substitution(work_temp2_.data(), work_temp_.data());
             }
             for (index_t i = 0; i < size; ++i) {
-                y[i] = temp[i] * static_cast<Scalar>(scaling_[i]);
+                y[i] = work_temp_[i] * static_cast<Scalar>(scaling_[i]);
             }
         } else {
             if (use_persistent) {
-                forward_substitution_persistent(x, temp.data());
-                backward_substitution_persistent(temp.data(), y);
+                forward_substitution_persistent(x, work_temp_.data());
+                backward_substitution_persistent(work_temp_.data(), y);
             } else {
-                forward_substitution(x, temp.data());
-                backward_substitution(temp.data(), y);
+                forward_substitution(x, work_temp_.data());
+                backward_substitution(work_temp_.data(), y);
             }
         }
     }
@@ -424,8 +433,8 @@ private:
             parallel_for(size, [&](index_t i) {
                 abmc_x_perm_[perm[i]] = x[i] * static_cast<Scalar>(composite_scaling_[i]);
             });
-            forward_substitution_abmc(abmc_x_perm_.data(), abmc_temp_.data());
-            backward_substitution_abmc(abmc_temp_.data(), abmc_y_perm_.data());
+            forward_substitution_abmc(abmc_x_perm_.data(), work_temp_.data());
+            backward_substitution_abmc(work_temp_.data(), abmc_y_perm_.data());
             parallel_for(size, [&](index_t i) {
                 y[i] = abmc_y_perm_[perm[i]] * static_cast<Scalar>(composite_scaling_[i]);
             });
@@ -433,8 +442,8 @@ private:
             parallel_for(size, [&](index_t i) {
                 abmc_x_perm_[perm[i]] = x[i];
             });
-            forward_substitution_abmc(abmc_x_perm_.data(), abmc_temp_.data());
-            backward_substitution_abmc(abmc_temp_.data(), abmc_y_perm_.data());
+            forward_substitution_abmc(abmc_x_perm_.data(), work_temp_.data());
+            backward_substitution_abmc(work_temp_.data(), abmc_y_perm_.data());
             parallel_for(size, [&](index_t i) {
                 y[i] = abmc_y_perm_[perm[i]];
             });
@@ -547,8 +556,7 @@ private:
                 const index_t row_begin = abmc_schedule_.block_offsets[blk];
                 const index_t row_end = abmc_schedule_.block_offsets[blk + 1];
 
-                for (index_t ridx = row_begin; ridx < row_end; ++ridx) {
-                    const index_t i = abmc_schedule_.block_rows[ridx];
+                for (index_t i = row_begin; i < row_end; ++i) {
                     Scalar s = x[i];
                     const index_t l_start = L_.row_ptr[i];
                     const index_t l_end = L_.row_ptr[i + 1] - 1; // Exclude diagonal
@@ -580,8 +588,7 @@ private:
                 const index_t row_begin = abmc_schedule_.block_offsets[blk];
                 const index_t row_end = abmc_schedule_.block_offsets[blk + 1];
 
-                for (index_t ridx = row_end; ridx-- > row_begin;) {
-                    const index_t i = abmc_schedule_.block_rows[ridx];
+                for (index_t i = row_end; i-- > row_begin;) {
                     Scalar s = Scalar(0);
                     const index_t lt_start = Lt_.row_ptr[i] + 1; // Skip diagonal
                     const index_t lt_end = Lt_.row_ptr[i + 1];

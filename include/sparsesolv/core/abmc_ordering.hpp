@@ -47,9 +47,10 @@ struct ABMCSchedule {
     std::vector<index_t> color_offsets;   // size: num_colors + 1
     std::vector<index_t> color_blocks;    // flat list of block indices per color
 
-    /// Flat CSR-like storage for block -> row mapping
+    /// CSR-like storage for block -> row mapping
+    /// Rows within block b are block_offsets[b] .. block_offsets[b+1]-1
+    /// (contiguous new indices, no separate row array needed)
     std::vector<index_t> block_offsets;   // size: num_blocks + 1
-    std::vector<index_t> block_rows;      // flat list of row indices per block
 
     /// ordering[old_row] = new_row
     std::vector<index_t> ordering;
@@ -109,15 +110,13 @@ struct ABMCSchedule {
 
         // Stage 3: Multi-color the block graph
         std::vector<std::vector<index_t>> blk_color_list;
-        std::vector<index_t> blk_ordering;
-        std::vector<index_t> blk_reverse_ordering;
 
         color_graph(blk_row_ptr.data(), blk_col_idx.data(), actual_num_blocks,
-                    target_colors, blk_color_list, blk_ordering, blk_reverse_ordering);
+                    target_colors, blk_color_list);
 
         // Stage 4: Build final row ordering from block ordering
         build_row_ordering(n, actual_num_blocks, raw_block_list,
-                           blk_color_list, blk_reverse_ordering);
+                           blk_color_list);
 
     }
 
@@ -126,7 +125,6 @@ struct ABMCSchedule {
         color_offsets.clear();
         color_blocks.clear();
         block_offsets.clear();
-        block_rows.clear();
         ordering.clear();
         reverse_ordering.clear();
     }
@@ -284,17 +282,13 @@ private:
      * @param row_ptr CSR row pointer of the graph
      * @param col_idx CSR column indices
      * @param n Number of nodes
-     * @param target_colors Suggested number of colors
+     * @param target_colors Suggested number of colors (lower bound)
      * @param out_color_list Output: color_list[c] = {node indices with color c}
-     * @param out_ordering Output: ordering[old] = new
-     * @param out_reverse Output: reverse_ordering[new] = old
      */
     static void color_graph(
         const index_t* row_ptr, const index_t* col_idx, index_t n,
         int target_colors,
-        std::vector<std::vector<index_t>>& out_color_list,
-        std::vector<index_t>& out_ordering,
-        std::vector<index_t>& out_reverse)
+        std::vector<std::vector<index_t>>& out_color_list)
     {
         int num_colors = target_colors;
 
@@ -356,18 +350,6 @@ private:
             std::remove_if(out_color_list.begin(), out_color_list.end(),
                            [](const std::vector<index_t>& v) { return v.empty(); }),
             out_color_list.end());
-
-        // Build ordering: enumerate nodes in color order
-        out_ordering.resize(n);
-        out_reverse.resize(n);
-        index_t new_idx = 0;
-        for (const auto& color_group : out_color_list) {
-            for (index_t old_idx : color_group) {
-                out_ordering[old_idx] = new_idx;
-                out_reverse[new_idx] = old_idx;
-                ++new_idx;
-            }
-        }
     }
 
     /**
@@ -376,14 +358,14 @@ private:
      * Enumerates rows in the order: color 0 blocks -> color 1 blocks -> ...
      * Within each block, rows are sorted by original index for locality.
      *
-     * @note blk_color_list[c] contains ORIGINAL block indices with color c
-     *       (as returned by color_graph). blk_reverse_ordering is not used.
+     * The new row indices within each block are contiguous:
+     * block b contains rows block_offsets[b] .. block_offsets[b+1]-1.
+     * No separate block_rows array is needed (it would be the identity).
      */
     void build_row_ordering(
         index_t n, index_t actual_num_blocks,
         std::vector<std::vector<index_t>>& raw_block_list,
-        const std::vector<std::vector<index_t>>& blk_color_list,
-        const std::vector<index_t>& /*blk_reverse_ordering*/)
+        const std::vector<std::vector<index_t>>& blk_color_list)
     {
         const index_t nc = static_cast<index_t>(blk_color_list.size());
         ordering.resize(n);
@@ -400,8 +382,6 @@ private:
 
         // Build flat block -> row mapping
         block_offsets.resize(actual_num_blocks + 1);
-        block_rows.reserve(n);
-        block_rows.clear();
 
         index_t row_idx = 0;
         index_t global_blk_id = 0;
@@ -418,7 +398,6 @@ private:
                 for (index_t orig_row : rows) {
                     ordering[orig_row] = row_idx;
                     reverse_ordering[row_idx] = orig_row;
-                    block_rows.push_back(row_idx);
                     ++row_idx;
                 }
                 ++global_blk_id;

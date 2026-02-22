@@ -67,6 +67,7 @@ See [docs/](docs/) for detailed documentation (in Japanese):
 - [Architecture](docs/architecture.md) — Source code structure and design
 - [Algorithms](docs/algorithms.md) — Algorithm descriptions (BDDC, IC, SGS-MRTR, CG, ABMC)
 - [BDDC Implementation Guide](docs/bddc_implementation_details.md) — Theory, pseudo-code, API, benchmarks
+- [ABMC Implementation Guide](docs/abmc_implementation_details.md) — Parallel triangular solves, performance analysis
 - [API Reference](docs/api_reference.md) — Python API reference
 - [Tutorials](docs/tutorials.md) — Practical examples with all solver types
 - [Development](docs/development.md) — Build, test, and development notes
