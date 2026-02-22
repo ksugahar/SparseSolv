@@ -199,7 +199,7 @@ BDDCでは `fes->GetFreeDofs(true)` (coupling=true) を使用。
 
 9. Y. Tsuburaya,
    "大規模電磁界問題の有限要素解析のための反復法の開発",
-   博士論文, 京都大学, 2016.
+   博士論文, 宇都宮大学, 2016.
 
-10. S. Hiruma, JP-MARs/SparseSolv,
+10. JP-MARs/SparseSolv,
     https://github.com/JP-MARs/SparseSolv

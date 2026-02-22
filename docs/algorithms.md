@@ -231,10 +231,10 @@ SGS-MRTR は**対称ガウス・ザイデル (SGS)** 前処理を**MRTR反復法
 **実装ファイル**: `solvers/sgs_mrtr_solver.hpp`
 
 **参考文献**:
-- 圓谷吉宏, 三船泰, 岩下武史, 高橋英治,
+- 圓谷友紀, 三船泰, 岩下武史, 高橋英治,
   "MRTR法に基づく前処理付き反復法の数値実験",
   *電気学会研究会資料*, SA-12-64, 2012.
-- 圓谷吉宏, 三船泰, 岩下武史, 高橋英治,
+- 圓谷友紀, 三船泰, 岩下武史, 高橋英治,
   "Minimum Residual-Like Methods for Solving Ax = b with
   Shift-and-Invert Enhanced Multi-Step MRTR",
   *IEEE Trans. Magnetics*, Vol. 49, No. 5, pp. 1569-1572, 2013.

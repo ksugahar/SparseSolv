@@ -18,7 +18,7 @@ NGSolveには直接法ソルバーと組込みBDDCが搭載されている。Spa
 
 1. **透過的で独立したBDDC実装** — NGSolveの組込みBDDCはフレームワーク内部に深く埋め込まれたプロダクションコードである。SparseSolvは同一のアルゴリズムを、読みやすく自己完結したC++ヘッダオンリーライブラリとして再実装した。同一問題での反復回数は[NGSolveのBDDCと完全に一致](docs/03_sparsesolv_vs_ngsolve_bddc.ipynb)し、BDDCを学習・改良・拡張したい開発者のリファレンスとなる。
 
-2. **電磁界 (HCurl) 問題への堅牢性** — curl-curl FEM行列は半正定値であり、標準のIC分解は破綻する。SparseSolvのauto-shift ICは破綻を検出し自動調整する。さらにBDDCは、ソース項が離散的にdiv-freeであるかどうかに関わらず収束する — [ICCGでは必須だが実際には保証しにくい条件](docs/02_performance_comparison.ipynb)を不要にする。
+2. **電磁界 (HCurl) 問題への堅牢性** — curl-curl FEM行列は半正定値であり、標準のIC分解は破綻する。SparseSolvのauto-shift ICは破綻を検出し自動調整する。さらにBDDCは、ソース項が離散的にdiv-freeであるかどうかに関わらず収束する — [ICCGでは必須だが実際には保証しにくい条件](docs/02_performance_comparison.ipynb)を不要にする。渦電流問題では導電率項 σ|u|² が自然に正則化として機能するため、curl-curl 単独の場合に比べてICCGでも安定する。純粋なcurl-curl問題では小さな正則化項 `σ*u*v*dx` (σ ≈ 1e-6) を加えることでICCGの安定性を確保できる。
 
 3. **ABMCマルチカラー順序付けによる並列ICCG** — IC前処理の三角解法は本質的に逐次的である。ABMC順序付けがこのボトルネックを解消し、並列前進・後退代入を実現する。BDDCのセットアップコストが割に合わない中規模問題でICCGを競争力のあるものにする。
 
@@ -382,7 +382,7 @@ ngsolve-sparsesolv/
    *Proc. 24th National Conference of the ACM*, pp. 157–172, 1969.
    — Reverse Cuthill-McKee (RCM) 帯域縮小順序付け。
 
-7. 圓谷吉宏, 三船泰, 岩下武史, 高橋英治,
+7. 圓谷友紀, 三船泰, 岩下武史, 高橋英治,
    "MRTR法に基づく前処理付き反復法の数値実験",
    *電気学会研究会資料*, SA-12-64, 2012.
    — SGS-MRTR法: 国内研究会論文。
@@ -393,12 +393,12 @@ ngsolve-sparsesolv/
    *IEEE Transactions on Magnetics*, Vol. 49, No. 5, pp. 1569–1572, 2013.
    — SGS-MRTRソルバー。
 
-9. 圓谷吉宏,
+9. 圓谷友紀,
    "大規模電磁界問題の有限要素解析のための反復法の開発",
-   *博士論文*, 京都大学, 2016.
+   *博士論文*, 宇都宮大学, 2016.
    — 大規模電磁界FEMの反復法に関する包括的参考文献。
 
-10. 比留間伸吾, JP-MARs/SparseSolv,
+10. JP-MARs/SparseSolv,
     https://github.com/JP-MARs/SparseSolv
     — 原実装 (MPL 2.0ライセンス)。
 
