@@ -3,7 +3,6 @@ name: Build and Test
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
 
@@ -59,61 +58,9 @@ jobs:
           cp build/Release/sparsesolv_ngsolve*.pyd "$SITE_PACKAGES/sparsesolv_ngsolve/" 2>/dev/null || \
           cp build/sparsesolv_ngsolve*.so "$SITE_PACKAGES/sparsesolv_ngsolve/" 2>/dev/null || true
           echo "from .sparsesolv_ngsolve import *" > "$SITE_PACKAGES/sparsesolv_ngsolve/__init__.py"
+          cp sparsesolv_ngsolve.pyi "$SITE_PACKAGES/sparsesolv_ngsolve/__init__.pyi"
+          cp py.typed "$SITE_PACKAGES/sparsesolv_ngsolve/"
 
       - name: Run tests
         run: python -m pytest tests/test_sparsesolv.py tests/test_bddc.py -v --tb=short
 
-  build-wheel:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: pip install ngsolve scikit-build-core pybind11 pytest
-
-      - name: Find NGSolve CMake directory
-        id: ngsolve-dir
-        shell: bash
-        run: |
-          NGSOLVE_DIR=$(python -c "
-          import ngsolve, pathlib
-          ngs_dir = pathlib.Path(ngsolve.__file__).parent
-          cmake_dir = ngs_dir / 'cmake'
-          if cmake_dir.exists():
-              print(cmake_dir)
-          else:
-              for p in ngs_dir.parents:
-                  c = p / 'lib' / 'cmake' / 'ngsolve'
-                  if c.exists():
-                      print(c)
-                      break
-              else:
-                  print(ngs_dir / 'cmake')
-          ")
-          echo "cmake_dir=$NGSOLVE_DIR" >> $GITHUB_OUTPUT
-
-      - name: Build wheel
-        run: pip wheel . --no-build-isolation -w dist
-        env:
-          CMAKE_ARGS: "-DNGSOLVE_INSTALL_DIR=${{ steps.ngsolve-dir.outputs.cmake_dir }}"
-
-      - name: Test wheel
-        shell: bash
-        run: |
-          pip install dist/sparsesolv_ngsolve-*.whl
-          python -m pytest tests/ -v --tb=short
-
-      - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.whl
-          generate_release_notes: true

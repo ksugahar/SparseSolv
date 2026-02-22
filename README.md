@@ -2,48 +2,105 @@
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 
-Header-only C++17 iterative solver library for sparse linear systems, with a standalone Python extension module for [NGSolve](https://ngsolve.org/).
+Header-only C++17 iterative solver library for [NGSolve](https://ngsolve.org/) finite element applications.
+Two complementary approaches for large-scale sparse linear systems:
 
-Fork of [JP-MARs/SparseSolv](https://github.com/JP-MARs/SparseSolv), specialized for NGSolve finite element applications.
+- **BDDC preconditioner** — Element-by-element domain decomposition with wirebasket coarse space. Produces mesh-independent iteration counts. Implementation matches NGSolve's built-in BDDC and serves as a reference for developers building their own BDDC.
+- **ICCG with ABMC multicolor ordering** — Incomplete Cholesky CG with parallel triangular solves via Algebraic Block Multi-Color ordering. Lower setup cost than BDDC; effective for well-conditioned problems.
 
-## Policy
+Both support `double` and `std::complex<double>`, and are provided as a standalone pybind11 extension module (`sparsesolv_ngsolve`), separate from NGSolve's source tree.
 
-**SparseSolv is provided as an independent module, separate from NGSolve.**
-It is NOT embedded into NGSolve's source tree. Instead, it is built as a standalone
-pybind11 extension module (`sparsesolv_ngsolve.pyd`) that links against an installed NGSolve.
+Fork of [JP-MARs/SparseSolv](https://github.com/JP-MARs/SparseSolv).
+
+## Why SparseSolv?
+
+NGSolve ships with direct solvers and built-in BDDC. SparseSolv adds three things that NGSolve does not provide out of the box:
+
+1. **Transparent, standalone BDDC implementation** — NGSolve's built-in BDDC is production code embedded deep in the framework. SparseSolv reimplements the same algorithm as a readable, self-contained C++ header-only library. Iteration counts [match NGSolve's BDDC exactly](docs/03_sparsesolv_vs_ngsolve_bddc.ipynb) on the same problems, making it a reference for developers who want to study, modify, or extend BDDC.
+
+2. **Robustness for electromagnetic (HCurl) problems** — Curl-curl FEM matrices are semi-definite, which causes standard IC factorization to break down. SparseSolv's auto-shift IC detects breakdown and adjusts automatically. More importantly, BDDC converges regardless of whether the source term is discretely divergence-free — a condition that [ICCG strictly requires but is not always easy to guarantee](docs/02_performance_comparison.ipynb).
+
+3. **Parallel ICCG via ABMC multicolor ordering** — The triangular solve in IC preconditioning is inherently sequential. ABMC (Algebraic Block Multi-Color) ordering breaks this bottleneck, enabling parallel forward/backward substitution. This makes ICCG competitive for moderate problems where BDDC setup cost is not justified.
+
+## When to Use What
+
+| Problem | FE Space | Recommended | Why |
+|---------|----------|-------------|-----|
+| Poisson (high order) | H1 (order >= 3) | **BDDC+CG** | 2 iterations, mesh-independent |
+| Poisson (low order) | H1 (order 1-2) | **ICCG** | BDDC setup cost not justified |
+| Elasticity | VectorH1 | **BDDC+CG** | ICCG iteration count grows with refinement |
+| Curl-curl (real) | HCurl (`nograds=True`) | **BDDC+CG** or **Shifted-ICCG** | BDDC robust to source formulation |
+| Eddy current (complex) | HCurl (complex) | **BDDC+CG** (`conjugate=False`) | Complex-symmetric support |
+| Small problems (< 1K DOFs) | any | Direct solver | Iterative solver overhead not justified |
+
+See [tutorials](docs/tutorials.md) for complete examples with timing comparisons.
+
+## Performance
+
+Benchmarks on 3D HCurl curl-curl problems (8 threads, `nograds=True`).
+Full details in [02_performance_comparison.ipynb](docs/02_performance_comparison.ipynb).
+
+**Toroidal coil** (148K DOFs, order 2 — well-posed div-free source):
+
+| Solver | Iterations | Wall Time | vs ICCG |
+|--------|-----------|-----------|---------|
+| ICCG | 513 | 13.1 s | 1.0x |
+| ICCG + ABMC (8 colors) | 444 | 7.4 s | **1.8x** |
+| BDDC | 47 | 4.2 s | **3.1x** |
+
+ABMC parallelizes the triangular solve bottleneck, cutting ICCG wall time nearly in half.
+BDDC goes further with mesh-independent convergence.
+
+**Helical coil** (565K DOFs, order 2 — source formulation robustness):
+
+| Source Formulation | ICCG | BDDC |
+|---|---|---|
+| Potential-based `J*v*dx` (not div-free) | 1000 iters, **diverged** | 33 iters, converged |
+| Curl-based `T*curl(v)*dx` (div-free) | 161 iters, converged | 53 iters, converged |
+
+ICCG requires the source to be discretely divergence-free — a constraint that is not always easy
+to satisfy in practice. BDDC converges regardless of source formulation.
 
 ## Documentation
 
 See [docs/](docs/) for detailed documentation (in Japanese):
-- [Architecture](docs/architecture.md) - Source code structure and design
-- [Algorithms](docs/algorithms.md) - Algorithm descriptions (BDDC, IC, SGS-MRTR, CG)
-- [API Reference](docs/api_reference.md) - Python API reference
-- [Tutorials](docs/tutorials.md) - Practical examples
-- [Development](docs/development.md) - Build, test, and development notes
+- [Architecture](docs/architecture.md) — Source code structure and design
+- [Algorithms](docs/algorithms.md) — Algorithm descriptions (BDDC, IC, SGS-MRTR, CG, ABMC)
+- [BDDC Implementation Guide](docs/bddc_implementation_details.md) — Theory, pseudo-code, API, benchmarks
+- [API Reference](docs/api_reference.md) — Python API reference
+- [Tutorials](docs/tutorials.md) — Practical examples with all solver types
+- [Development](docs/development.md) — Build, test, and development notes
+
+### Benchmark Notebooks
+
+| Notebook | Content |
+|----------|---------|
+| [01_shift_parameter.ipynb](docs/01_shift_parameter.ipynb) | IC shift parameter for semi-definite HCurl systems |
+| [02_performance_comparison.ipynb](docs/02_performance_comparison.ipynb) | BDDC vs ICCG vs ICCG+ABMC performance |
+| [03_sparsesolv_vs_ngsolve_bddc.ipynb](docs/03_sparsesolv_vs_ngsolve_bddc.ipynb) | SparseSolv BDDC = NGSolve BDDC equivalence |
 
 ## Features
 
 ### Preconditioners
-- **IC** (Incomplete Cholesky) - shifted IC(0) with auto-shift for semi-definite systems
-- **SGS** (Symmetric Gauss-Seidel) - no factorization required
-- **BDDC** (Balancing Domain Decomposition by Constraints) - domain decomposition with wirebasket coarse space
+- **BDDC** (Balancing Domain Decomposition by Constraints) — element-by-element construction, wirebasket coarse space, mesh-independent iterations
+- **IC** (Incomplete Cholesky) — shifted IC(0) with auto-shift for semi-definite systems
+- **SGS** (Symmetric Gauss-Seidel) — no factorization required
 
 ### Iterative Solvers
-- **CG** (Conjugate Gradient) - for SPD systems
-- **SGS-MRTR** - MRTR with built-in SGS using split formula (no separate preconditioner)
+- **CG** (Conjugate Gradient) — for SPD systems, supports complex-symmetric (`conjugate=False`)
+- **SGS-MRTR** — MRTR with built-in SGS using split formula
 
 ### Combined Methods
-- **ICCG** - CG + IC preconditioner
-- **SGSMRTR** - SGS-MRTR (self-contained)
+- **ICCG** — CG + IC preconditioner (with optional ABMC parallel triangular solves)
+- **SGSMRTR** — SGS-MRTR (self-contained)
 
 ### Advanced Features
 - Auto-shift IC decomposition for semi-definite matrices (curl-curl problems)
 - Diagonal scaling for improved conditioning
+- ABMC (Algebraic Block Multi-Color) ordering for parallel triangular solves
 - Numerical breakdown detection with convergence-aware recovery
 - Best-result tracking (returns best iterate if solver doesn't converge)
 - Residual history recording
-- ABMC (Algebraic Block Multi-Color) ordering for parallel triangular solves
-- Template support for `double` and `std::complex<double>`
 
 ### Parallelism
 
@@ -93,6 +150,8 @@ mkdir -p "$SITE_PACKAGES/sparsesolv_ngsolve"
 cp build/Release/sparsesolv_ngsolve*.pyd "$SITE_PACKAGES/sparsesolv_ngsolve/"  # Windows
 # cp build/sparsesolv_ngsolve*.so "$SITE_PACKAGES/sparsesolv_ngsolve/"         # Linux/macOS
 echo "from .sparsesolv_ngsolve import *" > "$SITE_PACKAGES/sparsesolv_ngsolve/__init__.py"
+cp sparsesolv_ngsolve.pyi "$SITE_PACKAGES/sparsesolv_ngsolve/__init__.pyi"
+cp py.typed "$SITE_PACKAGES/sparsesolv_ngsolve/"
 ```
 
 ### Step 3: Verify
@@ -106,7 +165,7 @@ NGSolve's shared libraries are loaded.
 
 ## NGSolve Usage
 
-### Quick Start
+### Quick Start (ICCG)
 
 ```python
 from ngsolve import *
@@ -130,26 +189,46 @@ solver = SparseSolvSolver(a.mat, method="ICCG",
 gfu.vec.data = solver * f.vec
 ```
 
-### Preconditioners with NGSolve's CGSolver
-
-```python
-from sparsesolv_ngsolve import ICPreconditioner, SGSPreconditioner, BDDCPreconditioner
-from ngsolve.krylovspace import CGSolver
-
-# IC preconditioner + NGSolve CG
-pre = ICPreconditioner(a.mat, freedofs=fes.FreeDofs(), shift=1.05)
-inv = CGSolver(a.mat, pre, tol=1e-10, maxiter=2000)
-gfu.vec.data = inv * f.vec
-```
-
 ### BDDC Preconditioner
 
 ```python
 from sparsesolv_ngsolve import BDDCPreconditioner
 from ngsolve.krylovspace import CGSolver
 
+# BDDC takes BilinearForm + FESpace (not just the matrix)
 pre = BDDCPreconditioner(a, fes, coarse_inverse="sparsecholesky")
 inv = CGSolver(a.mat, pre, tol=1e-10)
+gfu.vec.data = inv * f.vec
+```
+
+### ICCG with ABMC Parallel Ordering
+
+```python
+# ABMC enables parallel triangular solves in IC preconditioner
+solver = SparseSolvSolver(a.mat, method="ICCG",
+                          freedofs=fes.FreeDofs(), tol=1e-10,
+                          use_abmc=True,
+                          abmc_block_size=4,
+                          abmc_num_colors=4)
+gfu.vec.data = solver * f.vec
+```
+
+The ABMC algorithm groups nearby rows into blocks (BFS aggregation), then colors the
+block adjacency graph so that blocks with the same color have no lower-triangular
+dependencies. During the triangular solve, colors are processed sequentially while
+blocks within each color run in parallel.
+On a 148K DOF HCurl problem with 8 threads, ABMC reduces ICCG wall time from 13.1s
+to 7.4s (1.8x speedup) by parallelizing the triangular solve bottleneck.
+
+### Preconditioners with NGSolve's CGSolver
+
+```python
+from sparsesolv_ngsolve import ICPreconditioner, SGSPreconditioner
+from ngsolve.krylovspace import CGSolver
+
+# IC preconditioner + NGSolve CG
+pre = ICPreconditioner(a.mat, freedofs=fes.FreeDofs(), shift=1.05)
+inv = CGSolver(a.mat, pre, tol=1e-10, maxiter=2000)
 gfu.vec.data = inv * f.vec
 ```
 
@@ -205,31 +284,6 @@ solver = SparseSolvSolver(a.mat, method="ICCG",
 
 This corresponds to NGSolve's `CGSolver(conjugate=True/False)`.
 
-### ABMC Ordering (Parallel Triangular Solves)
-
-ABMC (Algebraic Block Multi-Color) ordering enables parallel execution of
-triangular solves in the IC preconditioner. Without ABMC, triangular solves use
-level scheduling, which can have limited parallelism for FEM matrices with deep
-dependency chains.
-
-```python
-solver = SparseSolvSolver(a.mat, method="ICCG",
-                          freedofs=fes.FreeDofs(), tol=1e-10,
-                          use_abmc=True,
-                          abmc_block_size=4,
-                          abmc_num_colors=4)
-```
-
-The algorithm groups nearby rows into blocks (BFS aggregation), then colors the
-block adjacency graph so that blocks with the same color have no lower-triangular
-dependencies. During the triangular solve:
-- Colors are processed sequentially (inter-color dependencies)
-- Blocks within the same color are processed in parallel
-- Rows within a block are processed sequentially
-
-The reordering is applied internally within the preconditioner; the CG solver and
-SpMV operate on the original matrix ordering.
-
 ### SparseSolvSolver Parameters
 
 | Parameter | Type | Default | Description |
@@ -254,9 +308,9 @@ SpMV operate on the original matrix ordering.
 ```python
 from sparsesolv_ngsolve import (
     # Factory functions (auto-dispatch real/complex based on mat.IsComplex())
+    BDDCPreconditioner,            # BDDC (BilinearForm + FESpace API)
     ICPreconditioner,              # Use with NGSolve's CGSolver
     SGSPreconditioner,             # Use with NGSolve's CGSolver
-    BDDCPreconditioner,            # BDDC (BilinearForm API or matrix API)
     SparseSolvSolver,              # Standalone solver (ICCG, SGSMRTR)
 
     SparseSolvResult,              # Solve result object
@@ -342,3 +396,6 @@ ngsolve-sparsesolv/
 ## License
 
 This project is licensed under the [Mozilla Public License 2.0](LICENSE).
+
+SparseSolv is provided as an independent module, separate from NGSolve.
+It is built as a standalone pybind11 extension module that links against an installed NGSolve.

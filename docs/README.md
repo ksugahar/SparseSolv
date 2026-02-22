@@ -9,7 +9,9 @@ BDDC前処理を中心に、IC分解・SGS-MRTR・CG法を提供する。
 |---|---|
 | [architecture.md](architecture.md) | ソースコード構成とアーキテクチャ |
 | [algorithms.md](algorithms.md) | アルゴリズム解説 (BDDC, IC, SGS-MRTR, CG, ABMC) |
+| [bddc_implementation_details.md](bddc_implementation_details.md) | BDDC実装ガイド (理論・疑似コード・API・ベンチマーク) |
 | [api_reference.md](api_reference.md) | Python APIリファレンス |
+| [tutorials.md](tutorials.md) | 実践チュートリアル (全ソルバー比較) |
 | [development.md](development.md) | ビルド・テスト・開発者向け情報 |
 
 ### ベンチマーク・ノートブック

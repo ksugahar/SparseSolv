@@ -58,6 +58,10 @@ if(SPARSESOLV_BUILD_NGSOLVE)
              "from .sparsesolv_ngsolve import *\n")
         install(FILES "${CMAKE_CURRENT_BINARY_DIR}/__init__.py"
                 DESTINATION sparsesolv_ngsolve)
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/sparsesolv_ngsolve.pyi"
+                DESTINATION sparsesolv_ngsolve RENAME __init__.pyi)
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/py.typed"
+                DESTINATION sparsesolv_ngsolve)
     else()
         # Manual build: install next to NGSolve
         install(TARGETS sparsesolv_ngsolve
